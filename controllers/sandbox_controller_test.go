@@ -6082,6 +6082,43 @@ func TestReconcileSkipsAdoptionWhenSandboxIsDeleting(t *testing.T) {
 	}
 }
 
+func TestSandboxCanAdoptReportsDecision(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sandbox",
+		Namespace: "test-ns",
+		UID:       sandboxUID,
+	}}
+	deletingSandbox := sandbox.DeepCopy()
+	deletingSandbox.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	deletingSandbox.Finalizers = []string{metav1.FinalizerDeleteDependents}
+	recreatedSandbox := sandbox.DeepCopy()
+	recreatedSandbox.UID = "recreated-sandbox-uid"
+
+	testCases := []struct {
+		name       string
+		apiSandbox *sandboxv1beta1.Sandbox
+		want       sandboxAdoptionDecision
+	}{
+		{name: "allowed", apiSandbox: sandbox, want: sandboxAdoptionAllowed},
+		{name: "being deleted", apiSandbox: deletingSandbox, want: sandboxAdoptionDeleting},
+		{name: "missing", want: sandboxAdoptionMissing},
+		{name: "recreated with a different UID", apiSandbox: recreatedSandbox, want: sandboxAdoptionReplaced},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var apiObjs []runtime.Object
+			if tc.apiSandbox != nil {
+				apiObjs = append(apiObjs, tc.apiSandbox)
+			}
+			r := SandboxReconciler{APIReader: newFakeClient(apiObjs...)}
+			got, err := r.sandboxCanAdopt(t.Context(), sandbox)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestReconcilePVCsReturnsErrorWhenSandboxReadFails(t *testing.T) {
 	sandboxName := "test-sandbox"
 	sandboxNs := "test-ns"

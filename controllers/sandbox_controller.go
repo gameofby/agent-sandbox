@@ -140,6 +140,15 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 	return resourceOwnedByOther, controllerRef
 }
 
+type sandboxAdoptionDecision string
+
+const (
+	sandboxAdoptionAllowed  sandboxAdoptionDecision = "allowed"
+	sandboxAdoptionDeleting sandboxAdoptionDecision = "Sandbox is being deleted"
+	sandboxAdoptionMissing  sandboxAdoptionDecision = "Sandbox no longer exists"
+	sandboxAdoptionReplaced sandboxAdoptionDecision = "Sandbox was recreated with a different UID"
+)
+
 // sandboxCanAdopt reports whether the Sandbox may take ownership of an
 // unowned child. It reads the Sandbox from the API server because the
 // informer cache can show a child released by an orphan delete before it
@@ -148,7 +157,7 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 // garbage collector then deletes the child that the orphan delete meant to
 // keep. The garbage collector only orphans dependents after the deletion is
 // recorded, so a read made after the child was seen unowned observes it.
-func (r *SandboxReconciler) sandboxCanAdopt(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (bool, error) {
+func (r *SandboxReconciler) sandboxCanAdopt(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (sandboxAdoptionDecision, error) {
 	reader := client.Reader(r.Client)
 	if r.APIReader != nil {
 		reader = r.APIReader
@@ -156,11 +165,17 @@ func (r *SandboxReconciler) sandboxCanAdopt(ctx context.Context, sandbox *sandbo
 	live := &sandboxv1beta1.Sandbox{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(sandbox), live); err != nil {
 		if k8serrors.IsNotFound(err) {
-			return false, nil
+			return sandboxAdoptionMissing, nil
 		}
-		return false, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
+		return sandboxAdoptionAllowed, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
 	}
-	return live.UID == sandbox.UID && live.DeletionTimestamp.IsZero(), nil
+	if live.UID != sandbox.UID {
+		return sandboxAdoptionReplaced, nil
+	}
+	if !live.DeletionTimestamp.IsZero() {
+		return sandboxAdoptionDeleting, nil
+	}
+	return sandboxAdoptionAllowed, nil
 }
 
 // isOwnedBySandbox reports whether pod is non-nil and owned by the given Sandbox.
@@ -1601,13 +1616,14 @@ func (r *SandboxReconciler) reconcileService(ctx context.Context, sandbox *sandb
 				service.Name, service.Spec.ClusterIP, corev1.ClusterIPNone)
 		}
 
-		canAdopt, err := r.sandboxCanAdopt(ctx, sandbox)
+		adoptionDecision, err := r.sandboxCanAdopt(ctx, sandbox)
 		if err != nil {
 			return nil, err
 		}
-		if !canAdopt {
-			logger.V(4).Info("Refusing to adopt unowned service: Sandbox is being deleted",
-				"Service.Name", service.Name, "Sandbox.Name", sandbox.Name)
+		if adoptionDecision != sandboxAdoptionAllowed {
+			logger.V(4).Info("Refusing to adopt unowned service",
+				"Service.Name", service.Name, "Sandbox.Name", sandbox.Name,
+				"Reason", adoptionDecision)
 			r.clearServiceStatus(sandbox)
 			return nil, nil
 		}
@@ -1859,13 +1875,14 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 					pod.Name, sandboxv1beta1.SandboxAdoptableLabel, sandboxv1beta1.SandboxNameHashLabel)
 			}
 
-			canAdopt, err := r.sandboxCanAdopt(ctx, sandbox)
+			adoptionDecision, err := r.sandboxCanAdopt(ctx, sandbox)
 			if err != nil {
 				return nil, 0, err
 			}
-			if !canAdopt {
-				logger.V(4).Info("Refusing to adopt unowned pod: Sandbox is being deleted",
-					"Pod.Name", pod.Name, "Sandbox.Name", sandbox.Name)
+			if adoptionDecision != sandboxAdoptionAllowed {
+				logger.V(4).Info("Refusing to adopt unowned pod",
+					"Pod.Name", pod.Name, "Sandbox.Name", sandbox.Name,
+					"Reason", adoptionDecision)
 				return pod, 0, nil
 			}
 
@@ -2289,13 +2306,14 @@ func (r *SandboxReconciler) reconcilePVCs(ctx context.Context, sandbox *sandboxv
 						pvcName, sandboxv1beta1.SandboxAdoptableLabel, sandboxv1beta1.SandboxNameHashLabel)
 				}
 
-				canAdopt, err := r.sandboxCanAdopt(ctx, sandbox)
+				adoptionDecision, err := r.sandboxCanAdopt(ctx, sandbox)
 				if err != nil {
 					return err
 				}
-				if !canAdopt {
-					logger.V(4).Info("Refusing to adopt unowned PVC: Sandbox is being deleted",
-						"PVC.Name", pvcName, "Sandbox.Name", sandbox.Name)
+				if adoptionDecision != sandboxAdoptionAllowed {
+					logger.V(4).Info("Refusing to adopt unowned PVC",
+						"PVC.Name", pvcName, "Sandbox.Name", sandbox.Name,
+						"Reason", adoptionDecision)
 					continue
 				}
 
