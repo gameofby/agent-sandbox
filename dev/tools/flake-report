@@ -57,6 +57,7 @@ PASS_STATUSES = {1, 2, 3}  # PASS, PASS_WITH_ERRORS, PASS_WITH_SKIPS
 FAIL_STATUSES = {9, 10, 11, 12, 14}
 FLAKY_STATUS = 13  # failed, then passed on a rerun of the same column
 RUNNING_STATUS = 4  # still in flight: neither a pass nor a fail yet
+FINISHED_RESULTS = {"SUCCESS", "FAILURE", "ABORTED"}
 
 # How many of a test's newest completed results say whether it is failing at
 # head (all fail).
@@ -75,35 +76,50 @@ INFRA_MARKER_PREFIX = "<!-- flake-report:infra-tab="
 
 
 class FetchUnavailable(RuntimeError):
-    """The server could not be reached, so nothing is known about the URL.
+    """The artifact fetch did not produce usable content.
 
-    Distinct from a plain RuntimeError, which means the server answered and
-    the resource is absent (HTTP 4xx). Callers that classify CI runs must
-    treat an unreachable artifact as unknown, never as missing.
+    This error includes transport failures, non-404 HTTP responses, malformed
+    JSON, malformed artifact shapes, and missing run locations. Callers that
+    classify CI runs must treat the artifact as unknown, never as missing.
     """
 
 
-# curl exit codes for failures that happen before any HTTP answer: DNS,
-# connect, timeout, TLS, and dropped connections. Anything else, above all
-# 22 (HTTP error under -f), is an answer and is not retried.
+class FetchNotFound(RuntimeError):
+    """The server returned HTTP 404 for the artifact."""
+
+
+# Retry these failures because they can recover without a definitive artifact
+# response. They include DNS, connection, timeout, TLS, and dropped connections.
 TRANSIENT_CURL_EXITS = {6, 7, 28, 35, 52, 55, 56}
 FETCH_ATTEMPTS = 3
 FETCH_RETRY_SECONDS = (2, 5)
 
 
 def fetch_text(url):
-    # curl rather than urllib: python installs without CA bundles (common on
-    # macOS) fail TLS verification, and curl is already a repo-tooling
-    # prerequisite alongside gh and jq.
+    """Returns an HTTP response body after bounded retries on transport errors."""
+    # Use curl because Python installations without CA bundles cannot verify
+    # TLS on common macOS setups. Curl is already a repository prerequisite.
     for attempt in range(1, FETCH_ATTEMPTS + 1):
         result = subprocess.run(
-            ["curl", "-fsSL", "--max-time", "60", url],
+            [
+                "curl", "-sSL", "--max-time", "60",
+                "--write-out", "\n%{http_code}", url,
+            ],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
-            return result.stdout
+            body, separator, status_text = result.stdout.rpartition("\n")
+            if not separator or not status_text.isdigit():
+                raise FetchUnavailable(f"fetch {url} returned no HTTP status")
+            status = int(status_text)
+            if 200 <= status < 300:
+                return body
+            if status == 404:
+                raise FetchNotFound(f"fetch {url} returned HTTP 404")
+            raise FetchUnavailable(f"fetch {url} returned HTTP {status}")
         if result.returncode not in TRANSIENT_CURL_EXITS:
-            raise RuntimeError(f"fetch {url} failed: {result.stderr.strip()}")
+            raise FetchUnavailable(
+                f"fetch {url} failed: {result.stderr.strip()}")
         if attempt < FETCH_ATTEMPTS:
             time.sleep(FETCH_RETRY_SECONDS[min(attempt, len(FETCH_RETRY_SECONDS)) - 1])
     raise FetchUnavailable(
@@ -160,12 +176,61 @@ def column_build_id(column_ids, i):
     return None
 
 
+def valid_clone_records(records):
+    """Reports whether clone-records.json has the fields used by the classifier."""
+    if not isinstance(records, list):
+        return False
+    for record in records:
+        if not isinstance(record, dict):
+            return False
+        if not isinstance(record.get("failed", False), bool):
+            return False
+        if not isinstance(record.get("refs", {}), dict):
+            return False
+        commands = record.get("commands", [])
+        if not isinstance(commands, list):
+            return False
+        for command in commands:
+            if not isinstance(command, dict):
+                return False
+            for field in ("output", "error"):
+                if not isinstance(command.get(field, ""), str):
+                    return False
+    return True
+
+
+def gcs_pointer_url(pointer):
+    """Returns the HTTPS URL for a valid GCS run pointer."""
+    try:
+        parsed = urllib.parse.urlsplit(pointer)
+    except ValueError as err:
+        raise FetchUnavailable(f"invalid run pointer: {err}") from err
+    path_parts = parsed.path.split("/")
+    valid = (
+        parsed.scheme == "gs"
+        and parsed.netloc
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and not any(character.isspace() for character in pointer)
+        and len(path_parts) > 1
+        and all(part not in ("", ".", "..") for part in path_parts[1:])
+    )
+    if not valid:
+        raise FetchUnavailable(f"invalid run pointer {pointer!r}")
+    return f"{GCS_HTTP}/{parsed.netloc}{parsed.path}"
+
+
 def make_artifact_fetcher(gcs_query, build_id):
-    """Returns fetch(name) -> parsed JSON artifact of one prow run, or None.
+    """Returns a callable that fetches artifacts from one Prow run.
 
     pr-logs/directory tab queries don't contain the run dirs themselves;
     each build has a pointer file naming the real gs:// location. The pointer
     is resolved lazily and cached so a run costs at most one extra fetch.
+
+    The callable returns None only after an HTTP 404. It raises FetchUnavailable
+    when it cannot resolve the run or validate the artifact.
     """
     cache = {}
 
@@ -178,31 +243,48 @@ def make_artifact_fetcher(gcs_query, build_id):
                 try:
                     pointer = fetch_text(
                         f"{GCS_HTTP}/{gcs_query}/{build_id}.txt").strip()
-                except FetchUnavailable:
-                    raise
-                except RuntimeError:
+                except FetchNotFound:
                     return None
-                if pointer.startswith("gs://"):
-                    cache["dir"] = f"{GCS_HTTP}/{pointer[len('gs://'):]}"
+                except FetchUnavailable:
+                    cache.pop("dir", None)
+                    raise
+                try:
+                    cache["dir"] = gcs_pointer_url(pointer)
+                except FetchUnavailable:
+                    cache.pop("dir", None)
+                    raise
             else:
                 cache["dir"] = f"{GCS_HTTP}/{gcs_query}/{build_id}"
         return cache["dir"]
 
     def fetch(name):
-        """Returns the parsed artifact, None when the run has no such file.
-
-        Raises FetchUnavailable when the server could not be reached, so a
-        network blip is never mistaken for a missing artifact.
-        """
+        """Returns an artifact, or None when the server reports HTTP 404."""
         base = resolve()
         if not base:
-            return None
+            raise FetchUnavailable(
+                f"run {build_id or '<missing>'} has no artifact location")
         try:
-            return fetch_json(f"{base}/{name}")
-        except FetchUnavailable:
-            raise
-        except (RuntimeError, ValueError):
+            artifact = fetch_json(f"{base}/{name}")
+        except FetchNotFound:
             return None
+        except ValueError as err:
+            raise FetchUnavailable(
+                f"fetch {base}/{name} returned invalid JSON: {err}") from err
+        valid = True
+        if name == "finished.json":
+            result = artifact.get("result") if isinstance(artifact, dict) else None
+            valid = (
+                isinstance(artifact, dict)
+                and isinstance(result, str)
+                and result.upper() in FINISHED_RESULTS
+            )
+        elif name == "clone-records.json":
+            valid = valid_clone_records(artifact)
+        if not valid:
+            raise FetchUnavailable(
+                f"fetch {base}/{name} returned invalid artifact shape "
+                f"{type(artifact).__name__}")
+        return artifact
 
     # Callers that need the run's location (e.g. to read the PR number out
     # of a pr-logs path) can reuse the cached pointer resolution.
@@ -245,7 +327,7 @@ def classify_red_run(has_failing_test, has_test_results, fetch_artifact):
 
     fetch_artifact(name) returns the parsed JSON artifact from the run's GCS
     dir, None when the run has no such file, and raises FetchUnavailable
-    when the server could not be reached; only artifacts needed for the
+    when other failures prevent a verdict. Only the artifacts needed for the
     verdict are fetched.
     """
     try:
@@ -458,8 +540,8 @@ def analyze_tab(dashboard, tab, window, pr_files=None):
     # failure, and those errors must not count as flakes. Only meaningful
     # on tabs that report per-test rows; on junit-less tabs (lint, autogen)
     # a red run is indistinguishable from a legitimately failing PR.
-    # A column whose artifacts could not be fetched is unknown: it might be
-    # an aborted run, so it is kept out of every count rather than guessed.
+    # A column whose artifacts could not be fetched is unknown.
+    # It might be an aborted run, so keep it out of every count.
     col_class = {}
     aborted_cols = set()
     unknown_cols = set()
@@ -534,18 +616,20 @@ def analyze_tab(dashboard, tab, window, pr_files=None):
     for name, statuses in test_rows.items():
         suite = suite_of(name)
 
+        def usable_column(i):
+            return i not in aborted_cols and i not in unknown_cols
+
         def excluded(i):
-            return (i in aborted_cols or i in unknown_cols or i in mass_cols
+            return (not usable_column(i) or i in mass_cols
                     or (suite, i) in suite_mass)
 
         fail_cols = [i for i in range(ncols)
                      if cell(statuses, i) in FAIL_STATUSES and not excluded(i)]
         pass_cols = [i for i in range(ncols)
-                     if cell(statuses, i) in PASS_STATUSES
-                     and i not in aborted_cols]
+                     if cell(statuses, i) in PASS_STATUSES and usable_column(i)]
         flaky_cells = [i for i in range(ncols)
                        if cell(statuses, i) == FLAKY_STATUS
-                       and i not in aborted_cols]
+                       and usable_column(i)]
         if not fail_cols and not flaky_cells:
             continue
 
@@ -609,6 +693,7 @@ def analyze_tab(dashboard, tab, window, pr_files=None):
             "distinct_changelists": distinct_cls,
             "retest_flips": retest_flips,
             "flaky_cells": len(flaky_cells),
+            "unknown_runs": len(unknown_cols),
             "self_regression_cols": self_regression,
             "last_failure_ts": max(
                 (timestamps[i] for i in fail_cols + flaky_cells if i < len(timestamps)),
@@ -659,19 +744,30 @@ def analyze_tab(dashboard, tab, window, pr_files=None):
     # PR breakage produce the same red-without-failing-test TestGrid shape
     # but are not infra; report them separately.
     infra = None
-    if col_class:
+    if col_class or unknown_cols:
         infra_cols = [i for i, c in col_class.items() if c == "infra"]
+        unknown_details = [
+            {
+                "build_id": column_build_id(column_ids, i) or "unknown build",
+                "timestamp": timestamps[i] if i < len(timestamps) else 0,
+            }
+            for i in sorted(unknown_cols)
+        ]
+        classified_reds = sum(1 for c in col_class.values() if c != "unknown")
         infra = {
             "tab": tab,
-            "red_runs": len(col_class),
+            "red_runs": classified_reds,
             "infra_runs": len(infra_cols),
             "aborted_runs": sum(1 for c in col_class.values() if c == "aborted"),
             "clone_failures": sum(
                 1 for c in col_class.values() if c == "clone_failure"),
             "pretest_failures": sum(
                 1 for c in col_class.values() if c == "pretest_failure"),
-            "unknown_runs": sum(1 for c in col_class.values() if c == "unknown"),
-            "total_runs": sum(1 for i in range(ncols) if cell(overall, i) != 0),
+            "unknown_runs": len(unknown_cols),
+            "unknown_details": unknown_details,
+            "total_runs": sum(
+                1 for i in range(ncols)
+                if cell(overall, i) != 0 and i not in unknown_cols),
             "last_failure_ts": max(
                 (timestamps[i] for i in infra_cols if i < len(timestamps)),
                 default=0,
@@ -689,6 +785,7 @@ def fmt_ts(ms):
 
 def render_report(dashboard, flaky, consistent, infra, window, pr_local=(),
                   recovered=()):
+    """Renders a Markdown report for the supplied findings."""
     lines = [
         f"# Flake report: {dashboard}",
         f"Window: last {window} runs per tab. Generated from {TESTGRID}/{dashboard}.",
@@ -763,10 +860,14 @@ def render_report(dashboard, flaky, consistent, infra, window, pr_local=(),
                 f"pre-test PR breakage (compile/vet/mypy gates — "
                 f"author-actionable)")
         if i.get("unknown_runs"):
+            details = ", ".join(
+                f"`{d['build_id']}` at {fmt_ts(d['timestamp'])}"
+                for d in i.get("unknown_details", []))
+            detail_text = f" ({details})" if details else ""
             lines.append(
-                f"- {i['tab']}: {i['unknown_runs']} red run(s) could not be "
-                f"classified because their artifacts were unreachable; rerun "
-                f"the report before acting on this tab")
+                f"- {i['tab']}: {i['unknown_runs']} run(s) could not be "
+                f"classified because their artifacts were unreachable"
+                f"{detail_text}. Rerun the report before acting on this tab.")
         excluded_any = excluded_any or any(
             i.get(k) for k in ("aborted_runs", "clone_failures",
                                "pretest_failures", "unknown_runs"))
@@ -844,9 +945,14 @@ def merge_flaky_by_test(flaky):
         if m is None:
             merged[f["test"]] = dict(f, tabs=[f["tab"]],
                                      job_histories=[f["job_history"]])
+            merged[f["test"]].setdefault("unknown_runs", 0)
             continue
-        for key in ("fails", "passes", "retest_flips", "flaky_cells", "self_regression_cols"):
+        for key in (
+            "fails", "passes", "retest_flips", "flaky_cells",
+            "self_regression_cols",
+        ):
             m[key] += f[key]
+        m["unknown_runs"] += f.get("unknown_runs", 0)
         m["last_failure_ts"] = max(m["last_failure_ts"], f["last_failure_ts"])
         m["tabs"].append(f["tab"])
         m["job_histories"].append(f["job_history"])
@@ -878,6 +984,7 @@ or triage manually per [docs/testing.md](https://github.com/kubernetes-sigs/agen
 
 
 def update_issues(repo, flaky, infra, dry_run):
+    """Creates or refreshes flake issues, except when evidence is incomplete."""
     existing = json.loads(
         gh(
             "issue", "list", "--repo", repo, "--label", "kind/flake",
@@ -896,6 +1003,11 @@ def update_issues(repo, flaky, infra, dry_run):
     )
     actions = []
     for f in flaky:
+        if f.get("unknown_runs"):
+            actions.append(
+                f"skip ({f['unknown_runs']} run(s) unclassified, artifacts "
+                f"unreachable): {f['short']}")
+            continue
         marker = f"{ISSUE_MARKER_PREFIX}{f['test']} -->"
         issue = find_existing_issue(existing, marker, f["short"])
         if issue and marker not in issue.get("body", ""):
@@ -945,7 +1057,7 @@ def update_issues(repo, flaky, infra, dry_run):
             # Some red runs could not be classified, so the infra count is
             # a lower bound at best and the issue text would be wrong.
             actions.append(
-                f"skip ({i['unknown_runs']} red run(s) unclassified, artifacts "
+                f"skip ({i['unknown_runs']} run(s) unclassified, artifacts "
                 f"unreachable): infra {i['tab']}")
             continue
         marker = f"{INFRA_MARKER_PREFIX}{i['tab']} -->"

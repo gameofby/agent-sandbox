@@ -130,9 +130,8 @@ class ClassifyRedRunTest(unittest.TestCase):
         self.assertEqual(cls, "infra")
 
     def test_unreachable_artifacts_are_unknown_not_infra(self):
-        # A DNS or connection failure says nothing about the run, so it must
-        # not be filed as an infra failure (or mistaken for a non-aborted
-        # run).
+        # A DNS or connection failure says nothing about the run.
+        # The failure must not become an infra verdict.
         def unreachable(name):
             raise flake_report.FetchUnavailable("dns")
         self.assertEqual(flake_report.classify_red_run(False, False, unreachable), "unknown")
@@ -182,7 +181,8 @@ class MakeArtifactFetcherTest(unittest.TestCase):
         def fake_run(cmd, capture_output, text):
             calls.append(cmd[-1])
             rc = 6 if len(calls) < 3 else 0
-            return subprocess.CompletedProcess(cmd, rc, stdout="body", stderr="dns")
+            stdout = "body\n200" if rc == 0 else ""
+            return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="dns")
         with mock.patch.object(flake_report.subprocess, "run", fake_run), \
              mock.patch.object(flake_report.time, "sleep") as sleep:
             self.assertEqual(flake_report.fetch_text("https://x/y"), "body")
@@ -202,12 +202,24 @@ class MakeArtifactFetcherTest(unittest.TestCase):
 
         def fake_run(cmd, capture_output, text):
             calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 22, stdout="", stderr="404")
+            return subprocess.CompletedProcess(cmd, 0, stdout="not found\n404", stderr="")
         with mock.patch.object(flake_report.subprocess, "run", fake_run), \
              mock.patch.object(flake_report.time, "sleep") as sleep:
-            with self.assertRaises(RuntimeError) as ctx:
+            with self.assertRaises(flake_report.FetchNotFound):
                 flake_report.fetch_text("https://x/y")
-        self.assertNotIsInstance(ctx.exception, flake_report.FetchUnavailable)
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
+    def test_fetch_text_treats_other_http_errors_as_unavailable(self):
+        calls = []
+
+        def fake_run(cmd, capture_output, text):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="oops\n503", stderr="")
+        with mock.patch.object(flake_report.subprocess, "run", fake_run), \
+             mock.patch.object(flake_report.time, "sleep") as sleep:
+            with self.assertRaises(flake_report.FetchUnavailable):
+                flake_report.fetch_text("https://x/y")
         self.assertEqual(len(calls), 1)
         sleep.assert_not_called()
 
@@ -220,6 +232,8 @@ class MakeArtifactFetcherTest(unittest.TestCase):
 
         def fake_fetch_json(url):
             urls.append(url)
+            if url.endswith("clone-records.json"):
+                return []
             return {"result": "FAILURE"}
 
         with mock.patch.object(flake_report, "fetch_text", fake_fetch_text), \
@@ -235,6 +249,27 @@ class MakeArtifactFetcherTest(unittest.TestCase):
             "https://storage.googleapis.com/bucket/pr-logs/pull/org_repo/1/job/123/clone-records.json",
         ])
 
+    def test_rejects_a_malformed_directory_pointer(self):
+        for pointer in (
+            "",
+            "gs://",
+            "gs:///missing-bucket",
+            "gs://bucket",
+            "gs://bucket/path?query=value",
+            "gs://bucket/path#fragment",
+            "gs://bucket/path with space",
+            "https://example.test/not-a-gs-path",
+        ):
+            with self.subTest(pointer=pointer), \
+                 mock.patch.object(flake_report, "fetch_text", return_value=pointer):
+                fetch = flake_report.make_artifact_fetcher(
+                    "bucket/pr-logs/directory/job", "123")
+                with self.assertRaises(flake_report.FetchUnavailable):
+                    fetch.resolved_dir()
+                self.assertEqual(
+                    flake_report.classify_red_run(False, False, fetch),
+                    "unknown")
+
     def test_periodic_logs_path_needs_no_pointer(self):
         urls = []
 
@@ -248,9 +283,10 @@ class MakeArtifactFetcherTest(unittest.TestCase):
         self.assertEqual(
             urls, ["https://storage.googleapis.com/bucket/logs/job/456/finished.json"])
 
-    def test_returns_none_without_build_id_or_on_fetch_error(self):
+    def test_without_build_location_is_unknown_but_http_404_is_absent(self):
         fetch = flake_report.make_artifact_fetcher("bucket/logs/job", None)
-        self.assertIsNone(fetch("finished.json"))
+        with self.assertRaises(flake_report.FetchUnavailable):
+            fetch("finished.json")
 
         def no_fetch(url):
             raise AssertionError(f"unexpected fetch of {url}")
@@ -264,12 +300,52 @@ class MakeArtifactFetcherTest(unittest.TestCase):
             fetch = flake_report.make_artifact_fetcher("", "123")
             self.assertIsNone(fetch.resolved_dir())
 
-        def boom(url):
-            raise RuntimeError("404")
+        def not_found(url):
+            raise flake_report.FetchNotFound("404")
 
-        with mock.patch.object(flake_report, "fetch_json", boom):
+        with mock.patch.object(flake_report, "fetch_json", not_found):
             fetch = flake_report.make_artifact_fetcher("bucket/logs/job", "456")
             self.assertIsNone(fetch("finished.json"))
+
+    def test_non_404_fetch_errors_remain_unknown(self):
+        def unavailable(url):
+            raise flake_report.FetchUnavailable("503")
+
+        with mock.patch.object(flake_report, "fetch_json", unavailable):
+            fetch = flake_report.make_artifact_fetcher("bucket/logs/job", "456")
+            with self.assertRaises(flake_report.FetchUnavailable):
+                fetch("finished.json")
+
+        def invalid_json(url):
+            raise ValueError("bad json")
+
+        with mock.patch.object(flake_report, "fetch_json", invalid_json):
+            fetch = flake_report.make_artifact_fetcher("bucket/logs/job", "456")
+            with self.assertRaises(flake_report.FetchUnavailable):
+                fetch("finished.json")
+
+    def test_wrong_artifact_shape_remains_unknown(self):
+        for name, value in (
+            ("finished.json", None),
+            ("finished.json", []),
+            ("finished.json", {}),
+            ("finished.json", {"result": ""}),
+            ("finished.json", {"result": "BROKEN"}),
+            ("finished.json", {"result": []}),
+            ("clone-records.json", {}),
+            ("clone-records.json", ["not-an-object"]),
+            ("clone-records.json", [{"failed": "false"}]),
+            ("clone-records.json", [{"failed": True, "commands": [None]}]),
+            (
+                "clone-records.json",
+                [{"commands": [{"output": [], "error": "failed"}]}],
+            ),
+        ):
+            with self.subTest(name=name, value=value), \
+                 mock.patch.object(flake_report, "fetch_json", return_value=value):
+                fetch = flake_report.make_artifact_fetcher("bucket/logs/job", "456")
+                with self.assertRaises(flake_report.FetchUnavailable):
+                    fetch(name)
 
 
 def rle(values):
@@ -378,9 +454,8 @@ class AnalyzeTabTest(unittest.TestCase):
                                fake_fetcher):
             flaky, consistent, _, _, _ = flake_report.analyze_tab("dash", "tab", 3)
         findings = {f["test"]: f for f in flaky + consistent}
-        # TestP: one real failure on a single changelist. Before the fix the
-        # aborted rerun's pass counted as a retest flip, promoting it to a
-        # reported flake; now it is correctly treated as that PR's own bug.
+        # TestP has one real failure on one changelist.
+        # An aborted rerun's pass must not create a retest flip.
         self.assertNotIn("pkg.TestP", findings)
         # TestQ: its only flaky cell sits in the aborted column, so it must
         # not be reported at all.
@@ -555,7 +630,17 @@ class UpdateIssuesClosedDedupTest(unittest.TestCase):
         with mock.patch.object(flake_report, "gh", fake_gh):
             actions = flake_report.update_issues("o/r", [], [finding], dry_run=False)
         self.assertEqual(actions, [
-            "skip (2 red run(s) unclassified, artifacts unreachable): infra tab"])
+            "skip (2 run(s) unclassified, artifacts unreachable): infra tab"])
+        self.assertEqual([c for c in calls if c[1] in ("create", "edit")], [])
+
+    def test_flaky_issue_not_filed_when_runs_are_unclassified(self):
+        fake_gh, calls = self.gh_stub([])
+        finding = dict(self.flaky_finding(900), unknown_runs=1)
+        with mock.patch.object(flake_report, "gh", fake_gh):
+            actions = flake_report.update_issues(
+                "o/r", [finding], [], dry_run=False)
+        self.assertEqual(actions, [
+            "skip (1 run(s) unclassified, artifacts unreachable): TestA"])
         self.assertEqual([c for c in calls if c[1] in ("create", "edit")], [])
 
     def test_infra_closed_issue_suppresses_refile(self):
@@ -635,9 +720,9 @@ class FalsePositiveFilterTest(unittest.TestCase):
         return result, fetched
 
     def test_unreachable_artifacts_exclude_the_column_everywhere(self):
-        # Column 0 is red with TestA failing but its artifacts cannot be
-        # fetched; column 1 is a real infra run. Column 0 must neither count
-        # as infra nor make TestA look flaky (it may have been aborted).
+        # Column 0 is a failed TestA run without reachable artifacts.
+        # Column 1 is a real infra run.
+        # Column 0 must not count as infra or make TestA look flaky.
         table = {
             "query": self.QUERY,
             "changelists": ["b0", "b1", "b2", "b3"],
@@ -662,9 +747,78 @@ class FalsePositiveFilterTest(unittest.TestCase):
              mock.patch.object(flake_report, "make_artifact_fetcher", fake_fetcher):
             flaky, consistent, infra, pr_local, _ = flake_report.analyze_tab("dash", "tab", 4)
         self.assertEqual((flaky, consistent, pr_local), ([], [], []))
-        self.assertEqual((infra["infra_runs"], infra["unknown_runs"], infra["red_runs"]), (1, 1, 2))
+        self.assertEqual(
+            (infra["infra_runs"], infra["unknown_runs"], infra["red_runs"]),
+            (1, 1, 1))
         report = flake_report.render_report("dash", [], [], [infra], 4)
-        self.assertIn("1 red run(s) could not be classified", report)
+        self.assertIn("1 run(s) could not be classified", report)
+        self.assertIn("`b0` at 1970-01-01 00:00 UTC", report)
+
+    def test_unreachable_green_overall_run_is_reported(self):
+        table = {
+            "query": self.QUERY,
+            "changelists": ["b0", "b1"],
+            "column_ids": ["b0", "b1"],
+            "timestamps": [200, 100],
+            "tests": [
+                {"name": "job.Overall", "statuses": rle([12, 1])},
+                {"name": "pkg.TestA", "statuses": rle([12, 1])},
+                {"name": "pkg.TestB", "statuses": rle([1, 12])},
+            ],
+        }
+        artifacts = {
+            "b0": {
+                "finished.json": {"result": "FAILURE", "revision": "x"},
+                "clone-records.json": [{"failed": False}],
+            },
+        }
+
+        def fake_fetcher(gcs_query, build_id):
+            def fetch(name):
+                if build_id == "b1":
+                    raise flake_report.FetchUnavailable("dns")
+                return artifacts.get(build_id, {}).get(name)
+            fetch.resolved_dir = lambda: None
+            return fetch
+
+        with mock.patch.object(flake_report, "fetch_json", return_value=table), \
+             mock.patch.object(flake_report, "make_artifact_fetcher", fake_fetcher):
+            _, _, infra, _, _ = flake_report.analyze_tab("dash", "tab", 2)
+        self.assertEqual((infra["red_runs"], infra["unknown_runs"]), (1, 1))
+        report = flake_report.render_report("dash", [], [], [infra], 2)
+        self.assertIn("1 run(s) could not be classified", report)
+
+    def test_unreachable_pass_column_does_not_create_a_retest_flip(self):
+        table = {
+            "query": self.QUERY,
+            "changelists": ["same", "same", "other"],
+            "column_ids": ["b0", "b1", "b2"],
+            "timestamps": [300, 200, 100],
+            "tests": [
+                {"name": "job.Overall", "statuses": rle([12, 12, 1])},
+                {"name": "pkg.TestA", "statuses": rle([12, 1, 1])},
+                {"name": "pkg.TestB", "statuses": rle([1, 12, 1])},
+            ],
+        }
+        artifacts = {
+            "b0": {
+                "finished.json": {"result": "FAILURE", "revision": "x"},
+                "clone-records.json": [{"failed": False}],
+            },
+        }
+
+        def fake_fetcher(gcs_query, build_id):
+            def fetch(name):
+                if build_id == "b1":
+                    raise flake_report.FetchUnavailable("dns")
+                return artifacts.get(build_id, {}).get(name)
+            fetch.resolved_dir = lambda: None
+            return fetch
+
+        with mock.patch.object(flake_report, "fetch_json", return_value=table), \
+             mock.patch.object(flake_report, "make_artifact_fetcher", fake_fetcher):
+            flaky, _, _, _, _ = flake_report.analyze_tab("dash", "tab", 3)
+        self.assertEqual(flaky, [])
 
     def test_aborted_run_with_green_overall_does_not_count(self):
         # Column 0: run aborted mid-suite; Overall never went red but TestA
