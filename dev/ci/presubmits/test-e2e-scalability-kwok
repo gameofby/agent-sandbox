@@ -76,16 +76,9 @@ KWOKCTL="${BINDIR}/kwokctl"
 CL2_COMMIT="${CL2_COMMIT:-d14a402a9540e4c8ba34717e428bfd2cf31a41a8}"
 CL2_BIN="${BINDIR}/clusterloader2"
 
-if [[ ! -x "${KWOKCTL}" ]]; then
-  echo "Installing kwokctl ${KWOK_VERSION}..."
-  # GitHub's release download has returned 504 for over a minute at a time,
-  # and curl's default backoff gives up after about thirty seconds. Space the
-  # retries out so a short GitHub incident does not fail the lane.
-  curl -fsSL --retry 8 --retry-delay 15 --retry-max-time 300 --retry-connrefused "https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}/kwokctl-linux-amd64" -o "${KWOKCTL}"
-  chmod +x "${KWOKCTL}"
-  curl -fsSL --retry 8 --retry-delay 15 --retry-max-time 300 --retry-connrefused "https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}/kwok-linux-amd64" -o "${BINDIR}/kwok"
-  chmod +x "${BINDIR}/kwok"
-fi
+# GitHub's release download has returned HTTP 504 for over a minute.
+# Curl's default backoff gives up after about thirty seconds.
+"${repo_root}/dev/ci/shared/install-kwok" "${KWOK_VERSION}" "${BINDIR}"
 
 if [[ ! -x "${CL2_BIN}" ]]; then
   echo "Building ClusterLoader2 binary (commit ${CL2_COMMIT:0:8})..."
