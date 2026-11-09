@@ -12,14 +12,28 @@ The Sandbox controller cache lags behind the Kubernetes API server. When orphan 
 3. If the cache does not reflect the deletion status yet, adoption logic treats the released resources as orphaned unowned items and re-attaches owner references.
 4. When the API server completes Sandbox finalization, the garbage collector deletes the re-attached resources.
 
-## Solution and review
+## Solution and reviews
 
 Upstream PR #2212 resolves this race:
 - The controller uses an uncached direct API reader before adopting unowned PVCs, Pods, or Services.
 - Helper `sandboxCanAdopt` verifies the current Sandbox object directly from the API server.
 - The reconciler refuses adoption if the Sandbox has a `deletionTimestamp`, a mismatched UID, or no longer exists.
-- Matt Pocock Standards and Spec reviews completed with zero actionable findings.
+
+The first Matt Pocock Standards review found one code-quality problem. The
+helper returned one boolean for three different states, and every caller
+logged that the Sandbox was being deleted. That message was false when the
+Sandbox was absent or had a different UID. Follow-up commit `0c0a311` returns
+a typed adoption decision and logs the actual reason.
+
+The Spec review found that the PR also protects Pod adoption. Issue #2209
+names PVCs and Services, but Pods follow the same orphan-deletion path. The
+Pod change remains because removing it would leave the same data-loss race.
+The PR body discloses the Pod change. A maintainer can confirm the intended
+scope before merge.
 
 ## Verification
 
 Unit tests in `controllers/sandbox_controller_test.go` verify stale cache rejection during deletion, absence, UID mismatch, and API reader errors.
+
+The follow-up correction adds a table test for all adoption decisions.
+`go test ./controllers -count=1` and `go vet ./controllers` pass locally.
