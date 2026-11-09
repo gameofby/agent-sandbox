@@ -6119,6 +6119,23 @@ func TestSandboxCanAdoptReportsDecision(t *testing.T) {
 	}
 }
 
+func TestSandboxCanAdoptReturnsUnknownOnReadError(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sandbox",
+		Namespace: "test-ns",
+		UID:       sandboxUID,
+	}}
+	r := SandboxReconciler{APIReader: newFakeClientWithInterceptor(interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return errors.New("apiserver unavailable")
+		},
+	})}
+
+	got, err := r.sandboxCanAdopt(t.Context(), sandbox)
+	require.Error(t, err)
+	assert.Equal(t, sandboxAdoptionUnknown, got)
+}
+
 func TestReconcilePVCsReturnsErrorWhenSandboxReadFails(t *testing.T) {
 	sandboxName := "test-sandbox"
 	sandboxNs := "test-ns"

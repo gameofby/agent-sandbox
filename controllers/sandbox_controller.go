@@ -143,6 +143,7 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 type sandboxAdoptionDecision string
 
 const (
+	sandboxAdoptionUnknown  sandboxAdoptionDecision = ""
 	sandboxAdoptionAllowed  sandboxAdoptionDecision = "allowed"
 	sandboxAdoptionDeleting sandboxAdoptionDecision = "Sandbox is being deleted"
 	sandboxAdoptionMissing  sandboxAdoptionDecision = "Sandbox no longer exists"
@@ -167,7 +168,7 @@ func (r *SandboxReconciler) sandboxCanAdopt(ctx context.Context, sandbox *sandbo
 		if k8serrors.IsNotFound(err) {
 			return sandboxAdoptionMissing, nil
 		}
-		return sandboxAdoptionAllowed, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
+		return sandboxAdoptionUnknown, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
 	}
 	if live.UID != sandbox.UID {
 		return sandboxAdoptionReplaced, nil
