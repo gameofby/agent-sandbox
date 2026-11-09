@@ -22,8 +22,8 @@ Upstream PR #2212 resolves this race:
 The first Matt Pocock Standards review found one code-quality problem. The
 helper returned one boolean for three different states, and every caller
 logged that the Sandbox was being deleted. That message was false when the
-Sandbox was absent or had a different UID. Follow-up commit `0c0a311` returns
-a typed adoption decision and logs the actual reason.
+Sandbox was absent or had a different UID. The controller now returns a typed
+adoption decision and logs the actual reason.
 
 The Spec review found that the PR also protects Pod adoption. Issue #2209
 names PVCs and Services, but Pods follow the same orphan-deletion path. The
@@ -33,7 +33,6 @@ scope before merge.
 
 ## Verification
 
-Unit tests in `controllers/sandbox_controller_test.go` verify stale cache rejection during deletion, absence, UID mismatch, and API reader errors.
-
-The follow-up correction adds a table test for all adoption decisions.
-`go test ./controllers -count=1` and `go vet ./controllers` pass locally.
+Unit tests in `controllers/sandbox_controller_test.go` verify stale cache
+rejection during deletion, absence, UID mismatch, and API reader errors. A
+table test covers every adoption decision.
