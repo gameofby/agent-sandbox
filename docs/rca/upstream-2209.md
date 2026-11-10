@@ -39,3 +39,5 @@ The following focused checks pass with Go 1.27.3:
 
 - `go test ./controllers -count=1`
 - `go vet ./controllers`
+- `make lint-go`
+- `make lint-api`
