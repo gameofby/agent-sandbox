@@ -23,6 +23,7 @@ remove the resources.
   - `590665c68d7f01bb59807ed831d93179a9f26d20`
   - `10915c3c5a0276ede6ef859043936d43fd570450`
   - `3df91cf872e1d608296a3702fe53109173dccfd3`
+  - `eae61cbfbfde957e91371135da2ebb8f834c68f7`
 
 The branch preserves the upstream commits and appends corrective commits. It
 does not rewrite upstream history.
@@ -91,11 +92,17 @@ debug pod on the hosting node. The guide tells the reader to delete that pod.
 
 ## Reviews
 
-Two fresh-context Matt reviews checked the final corrective patch against the
-PR base and the issue contract.
+Separate fresh-context reviews checked the issue contract and repository
+standards after the first corrective set.
 
-- Standards review: no hard violations and no actionable judgment calls.
-- Spec review: no missing, partial, incorrect, or unrequested behavior.
+- The initial Standards review found passive voice, chained sentences,
+  documentation-site prose defects, and comments that restated the manifest.
+- The initial Spec review found the missing node uptime comparison.
+- The first final Standards review passed after those corrections.
+- The first final Spec review passed after those corrections.
+- A later Standards review found that the guide did not link its manifest and
+  did not give a complete debug-pod cleanup action.
+- Later corrections add the link and a node-scoped cleanup command.
 
 The reviewers kept the raw upstream commit messages out of the correction set.
 Rewriting those messages would alter preserved upstream history. The reviewers

@@ -125,7 +125,8 @@ m8a.enclave
 The first value in each uptime output reports the number of seconds since that
 system booted. The sandbox value starts when Nitro Sandbox starts the VM. The
 node value starts when the node boots. Different values confirm separate boot
-times. Delete the debug pod when you finish the check:
+times. The command below deletes all `kubectl-debug` pods that run on this
+hosting node. Use it on this demonstration cluster when you finish the check:
 
 ```shell
 kubectl delete pods \
