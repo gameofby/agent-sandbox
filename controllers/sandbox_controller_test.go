@@ -5997,12 +5997,11 @@ func TestReconcilePVCs(t *testing.T) {
 	}
 }
 
-// TestReconcileSkipsAdoptionWhenSandboxIsDeleting covers an orphan delete of a
-// Sandbox: the garbage collector releases the Sandbox's PVC, Pod, and Service
-// before the informer cache shows the Sandbox's deletionTimestamp. The
-// controller must not adopt them back, or the garbage collector deletes them
-// together with the Sandbox.
-func TestReconcileSkipsAdoptionWhenSandboxIsDeleting(t *testing.T) {
+// TestReconcileSkipsAdoptionWhenCachedSandboxIsStale covers an orphan delete
+// of a Sandbox. The cached Sandbox can be live while the API server reports a
+// deleting, missing, or recreated Sandbox. The controller must not adopt the
+// released PVC, Pod, or Service in any of those cases.
+func TestReconcileSkipsAdoptionWhenCachedSandboxIsStale(t *testing.T) {
 	sandboxName := "test-sandbox"
 	sandboxNs := "test-ns"
 	nameHash := NameHash(sandboxName)

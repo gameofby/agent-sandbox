@@ -2,7 +2,7 @@
 
 ## Summary
 
-When a user deletes a Sandbox with `propagationPolicy: Orphan`, the controller releases child resources by removing owner references. A race condition allowed a reconciler with a stale cache to observe unowned PVCs, Pods, or Services and re-add owner references pointing to the deleting Sandbox. The Kubernetes garbage collector then deleted the re-adopted resources when it finalized the Sandbox deletion.
+When a user deletes a Sandbox with `propagationPolicy: Orphan`, the Kubernetes garbage collector's orphan processing removes the owner references from child resources. A race condition allowed a reconciler with a stale cache to observe unowned PVCs, Pods, or Services and re-add owner references pointing to the deleting Sandbox. The Kubernetes garbage collector then deleted the re-adopted resources when it finalized the Sandbox deletion.
 
 ## Root cause
 
