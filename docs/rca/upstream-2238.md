@@ -20,7 +20,7 @@ remove the resources.
 - Current upstream PR head: `87ef7815bf3f0882bee7138b859c7de9c87dd772`
 - Corrective branch: `codex/issue-2238-rev2`
 - Reviewed example correction head:
-  `17541ef6206e58b8269e0118d89cbfb0d4ef99b0`
+  `72506e42ba9bfd3855c6d43cbacfc33e526f067f`
 - Example corrective commits after the current upstream head:
   - `590665c68d7f01bb59807ed831d93179a9f26d20`
   - `10915c3c5a0276ede6ef859043936d43fd570450`
@@ -28,6 +28,7 @@ remove the resources.
   - `eae61cbfbfde957e91371135da2ebb8f834c68f7`
   - `73bae4a8c6e563ce891920d542bd6874f5ecd01a`
   - `17541ef6206e58b8269e0118d89cbfb0d4ef99b0`
+  - `72506e42ba9bfd3855c6d43cbacfc33e526f067f`
 
 The branch preserves the upstream commits and appends corrective commits. It
 does not rewrite upstream history.
@@ -116,6 +117,7 @@ standards after the first corrective set.
 - A later Spec review found that `kubectl debug` did not attach to the command
   and that the product-name check was outside the requested scope.
 - The latest correction adds `--stdin` and removes the product-name check.
+- The final Spec review at `72506e42` passed.
 
 The reviewers kept the raw upstream commit messages out of the correction set.
 Rewriting those messages would alter preserved upstream history. The reviewers
