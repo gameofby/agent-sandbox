@@ -6113,6 +6113,7 @@ func TestSandboxAdoptionDecision(t *testing.T) {
 		{name: "missing", want: sandboxAdoptionMissing, wantReason: "Sandbox no longer exists"},
 		{name: "recreated with a different UID", apiSandbox: recreatedSandbox, want: sandboxAdoptionRecreated, wantReason: "Sandbox was recreated with a different UID"},
 	}
+	assert.Equal(t, "Sandbox adoption decision is unknown", sandboxAdoptionUnknown.refusalReason())
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6143,7 +6144,7 @@ func TestSandboxAdoptionDecisionReturnsErrorOnReadError(t *testing.T) {
 
 	got, err := r.sandboxAdoptionDecision(t.Context(), sandbox)
 	require.Error(t, err)
-	assert.Equal(t, sandboxAdoptionAllowed, got)
+	assert.Equal(t, sandboxAdoptionUnknown, got)
 }
 
 func TestSandboxAdoptionDecisionRequiresAPIReader(t *testing.T) {
@@ -6156,7 +6157,7 @@ func TestSandboxAdoptionDecisionRequiresAPIReader(t *testing.T) {
 
 	got, err := r.sandboxAdoptionDecision(t.Context(), sandbox)
 	require.EqualError(t, err, "APIReader is required before adopting an unowned child")
-	assert.Equal(t, sandboxAdoptionAllowed, got)
+	assert.Equal(t, sandboxAdoptionUnknown, got)
 }
 
 func TestReconcilePVCsReturnsErrorWhenSandboxReadFails(t *testing.T) {

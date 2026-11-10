@@ -143,7 +143,8 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 type sandboxAdoptionDecision string
 
 const (
-	sandboxAdoptionAllowed   sandboxAdoptionDecision = ""
+	sandboxAdoptionUnknown   sandboxAdoptionDecision = "unknown"
+	sandboxAdoptionAllowed   sandboxAdoptionDecision = "allowed"
 	sandboxAdoptionMissing   sandboxAdoptionDecision = "missing"
 	sandboxAdoptionRecreated sandboxAdoptionDecision = "recreated"
 	sandboxAdoptionDeleting  sandboxAdoptionDecision = "deleting"
@@ -151,6 +152,8 @@ const (
 
 func (d sandboxAdoptionDecision) refusalReason() string {
 	switch d {
+	case sandboxAdoptionAllowed:
+		return ""
 	case sandboxAdoptionMissing:
 		return "Sandbox no longer exists"
 	case sandboxAdoptionRecreated:
@@ -158,7 +161,7 @@ func (d sandboxAdoptionDecision) refusalReason() string {
 	case sandboxAdoptionDeleting:
 		return "Sandbox is being deleted"
 	default:
-		return ""
+		return "Sandbox adoption decision is unknown"
 	}
 }
 
@@ -170,14 +173,14 @@ func (d sandboxAdoptionDecision) refusalReason() string {
 // server, where the deletion is visible.
 func (r *SandboxReconciler) sandboxAdoptionDecision(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (sandboxAdoptionDecision, error) {
 	if r.APIReader == nil {
-		return sandboxAdoptionAllowed, fmt.Errorf("APIReader is required before adopting an unowned child")
+		return sandboxAdoptionUnknown, fmt.Errorf("APIReader is required before adopting an unowned child")
 	}
 	live := &sandboxv1beta1.Sandbox{}
 	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(sandbox), live); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return sandboxAdoptionMissing, nil
 		}
-		return sandboxAdoptionAllowed, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
+		return sandboxAdoptionUnknown, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
 	}
 	if live.UID != sandbox.UID {
 		return sandboxAdoptionRecreated, nil
