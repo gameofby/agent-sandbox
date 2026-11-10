@@ -160,4 +160,4 @@ eksctl delete cluster --name nitro-sandbox-demo --region us-east-1
 ## Learn more
 
 - [Amazon EKS documentation for Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)
-- [AWS Nitro Sandbox Blueprints](https://aws-samples.github.io/sample-eks-nitro-sandbox): more Agent Sandbox examples on Amazon EKS, including warm pools, coding agents, storage and EKS Pod Identity.
+- [AWS Nitro Sandbox Blueprints](https://aws-samples.github.io/sample-eks-nitro-sandbox): more Agent Sandbox examples on Amazon EKS, including warm pools, coding agents, storage, and EKS Pod Identity.

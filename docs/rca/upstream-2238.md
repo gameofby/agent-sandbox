@@ -32,9 +32,10 @@ Source review confirmed that the original PR adds these items:
 - A documentation-site card
 - Cluster creation, access, isolation, and cleanup steps
 
-The PR author reports an end-to-end run on an EKS 1.37 Auto Mode cluster with
-Agent Sandbox v1.0.10. The author covered controller installation, Sandbox
-startup, kernel checks, port-forward access, password sign-in, and cleanup.
+The PR author reports an end-to-end run on an Amazon EKS Auto Mode cluster
+running Kubernetes 1.37 with Agent Sandbox v1.0.10. The author covered
+controller installation, Sandbox startup, kernel checks, port-forward access,
+password sign-in, and cleanup.
 
 This review environment has no Kubernetes cluster or AWS credentials. It did
 not repeat the EKS end-to-end test.
@@ -83,9 +84,10 @@ to delete that pod.
 
 ## Reviews
 
-The final fresh Standards review found no remaining documented-standard
-violations or Fowler smells. The final fresh Spec review found no missing,
-partial, unexpected, or incorrect requirements.
+The final fresh standards review found no remaining documented-standard
+violations or Fowler smells. The final fresh specification review found no
+missing or incorrect functional requirement. This RCA is a required
+fork-tracker artifact. It is outside the upstream pull request scope.
 
 ## Checks
 
@@ -95,6 +97,9 @@ The following checks pass:
 - Ruby YAML parse of `sandbox-nitro-eks.yaml`
 - Semantic comparison of the embedded README manifest and the YAML file
 - Relative Markdown link check
+
+The example README and documentation-site card mount into the Hugo site. Hugo
+is unavailable in this environment, so the rendered-preview check did not run.
 
 The host has no Go executable, so these repository checks did not run:
 
