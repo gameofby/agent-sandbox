@@ -97,15 +97,19 @@ The following checks pass:
 - Ruby YAML parse of `sandbox-nitro-eks.yaml`
 - Semantic comparison of the embedded README manifest and the YAML file
 - Relative Markdown link check
+- `make toc-verify`
 
 The example README and documentation-site card mount into the Hugo site. Hugo
 is unavailable in this environment, so the rendered-preview check did not run.
 
-The host has no Go executable, so these repository checks did not run:
+`make all` completed generation, build, Go lint, and API lint. It then stopped
+in the full unit suite. Five macOS PTY timing tests in
+`packages/sandboxd/pkg/server` received no initial terminal-size output. The
+Python sandbox-router test setup also requires `anyio==4.14.2`, which is not
+available for the installed Python 3.9.
 
 - `make all`
 - `make test-unit`
-- `make toc-verify`
 
 ## Open work
 
