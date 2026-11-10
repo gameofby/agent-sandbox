@@ -7,10 +7,11 @@ When a user deletes a Sandbox with `propagationPolicy: Orphan`, the Kubernetes g
 ## Root cause
 
 The Sandbox controller cache lags behind the Kubernetes API server. When orphan deletion occurs:
-1. The API server strips owner references from child objects and sets `deletionTimestamp` on the Sandbox.
-2. The controller reconciles child resources using cached data.
-3. If the cache does not reflect the deletion status yet, adoption logic treats the released resources as orphaned unowned items and re-attaches owner references.
-4. When the API server completes Sandbox finalization, the garbage collector deletes the re-attached resources.
+1. The API server sets `deletionTimestamp` on the Sandbox.
+2. The garbage collector's orphan processing removes owner references from the child objects.
+3. The controller reconciles child resources using cached data.
+4. If the cache does not reflect the deletion status yet, adoption logic treats the released resources as orphaned unowned items and re-attaches owner references.
+5. When the API server completes Sandbox finalization, the garbage collector deletes the re-attached resources.
 
 ## Solution
 
