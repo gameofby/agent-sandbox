@@ -16,7 +16,7 @@ EKS Auto Mode provides everything else. A new Auto Mode cluster includes the `is
 
 ## Step 1: Create an EKS Auto Mode cluster
 
-> **Note:** this command creates billable AWS resources: an EKS cluster, its VPC, and the EC2 instances Auto Mode launches for your pods. See [Cleanup](#cleanup) to remove them.
+> **Note:** this command creates billable AWS resources. It creates an EKS cluster, its VPC, and the EC2 instances that Auto Mode launches for your pods. See [Cleanup](#cleanup) to remove them.
 
 AWS supports Nitro Sandbox on Amazon EKS 1.36 or later. Check the [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) for the supported Regions. Replace `<REGION>` and `<EKS VERSION>` below:
 
@@ -36,7 +36,7 @@ confidential-sandbox   confidential-sandbox   4d11h
 isolated-sandbox       isolated-sandbox       4d11h
 ```
 
-This example uses `isolated-sandbox`. `confidential-sandbox` is described in the [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html).
+This example uses `isolated-sandbox`. The [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) describes `confidential-sandbox`.
 
 ## Step 2: Install the Agent Sandbox Controller
 

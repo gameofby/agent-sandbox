@@ -5,14 +5,11 @@ metadata:
 spec:
   podTemplate:
     spec:
-      # EKS Auto Mode ships this RuntimeClass. A pod that names it runs in its
-      # own AWS Nitro Sandbox, a lightweight VM with its own kernel, on a node
-      # that Auto Mode launches for it. No other field changes.
+      # Use the EKS-managed RuntimeClass to add isolation without node setup.
       runtimeClassName: isolated-sandbox
       containers:
       - name: code-server
-        # The image runs as a non-root user and serves VS Code on port 8080,
-        # with a generated password in ~/.config/code-server/config.yaml.
+        # Pin the image so this guide keeps the tested behavior.
         image: codercom/code-server:4.145.2
         securityContext:
           runAsNonRoot: true
