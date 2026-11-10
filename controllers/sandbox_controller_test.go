@@ -1744,8 +1744,10 @@ func TestReconcile(t *testing.T) {
 			if tc.sandboxAnnotations != nil {
 				sb.Annotations = tc.sandboxAnnotations
 			}
+			fakeClient := newFakeClient(append(tc.initialObjs, sb)...)
 			r := SandboxReconciler{
-				Client:        newFakeClient(append(tc.initialObjs, sb)...),
+				Client:        fakeClient,
+				APIReader:     fakeClient,
 				Scheme:        Scheme,
 				Tracer:        asmetrics.NewNoOp(),
 				ClusterDomain: "cluster.local",
@@ -3833,8 +3835,10 @@ func TestReconcilePod(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sandbox := tc.sandbox.DeepCopy()
 
+			fakeClient := newFakeClient(append(tc.initialObjs, sandbox)...)
 			r := SandboxReconciler{
-				Client:        newFakeClient(append(tc.initialObjs, sandbox)...),
+				Client:        fakeClient,
+				APIReader:     fakeClient,
 				Scheme:        Scheme,
 				Tracer:        asmetrics.NewNoOp(),
 				ClusterDomain: "cluster.local",
@@ -4812,6 +4816,7 @@ func TestReconcileFailedPodPolicyRecreatePatchBehavior(t *testing.T) {
 
 			r := SandboxReconciler{
 				Client:        fakeClient,
+				APIReader:     fakeClient,
 				Scheme:        Scheme,
 				Tracer:        asmetrics.NewNoOp(),
 				ClusterDomain: "cluster.local",
@@ -5655,8 +5660,10 @@ func TestReconcileService(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := newFakeClient(append(tc.initialObjs, tc.sandbox)...)
 			r := SandboxReconciler{
-				Client:        newFakeClient(append(tc.initialObjs, tc.sandbox)...),
+				Client:        fakeClient,
+				APIReader:     fakeClient,
 				Scheme:        Scheme,
 				Tracer:        asmetrics.NewNoOp(),
 				ClusterDomain: "cluster.local",
@@ -5958,10 +5965,12 @@ func TestReconcilePVCs(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := newFakeClient(append(tc.initialObjs, sandbox)...)
 			r := SandboxReconciler{
-				Client: newFakeClient(append(tc.initialObjs, sandbox)...),
-				Scheme: Scheme,
-				Tracer: asmetrics.NewNoOp(),
+				Client:    fakeClient,
+				APIReader: fakeClient,
+				Scheme:    Scheme,
+				Tracer:    asmetrics.NewNoOp(),
 			}
 
 			err := r.reconcilePVCs(t.Context(), sandbox, nameHash)
@@ -6081,7 +6090,7 @@ func TestReconcileSkipsAdoptionWhenCachedSandboxIsStale(t *testing.T) {
 	}
 }
 
-func TestSandboxCanAdoptReportsDecision(t *testing.T) {
+func TestSandboxAdoptionRefusalReason(t *testing.T) {
 	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
 		Name:      "test-sandbox",
 		Namespace: "test-ns",
@@ -6096,12 +6105,12 @@ func TestSandboxCanAdoptReportsDecision(t *testing.T) {
 	testCases := []struct {
 		name       string
 		apiSandbox *sandboxv1beta1.Sandbox
-		want       sandboxAdoptionDecision
+		want       string
 	}{
-		{name: "allowed", apiSandbox: sandbox, want: sandboxAdoptionAllowed},
-		{name: "being deleted", apiSandbox: deletingSandbox, want: sandboxAdoptionDeleting},
-		{name: "missing", want: sandboxAdoptionMissing},
-		{name: "recreated with a different UID", apiSandbox: recreatedSandbox, want: sandboxAdoptionReplaced},
+		{name: "allowed", apiSandbox: sandbox},
+		{name: "being deleted", apiSandbox: deletingSandbox, want: "Sandbox is being deleted"},
+		{name: "missing", want: "Sandbox no longer exists"},
+		{name: "recreated with a different UID", apiSandbox: recreatedSandbox, want: "Sandbox was recreated with a different UID"},
 	}
 
 	for _, tc := range testCases {
@@ -6111,14 +6120,14 @@ func TestSandboxCanAdoptReportsDecision(t *testing.T) {
 				apiObjs = append(apiObjs, tc.apiSandbox)
 			}
 			r := SandboxReconciler{APIReader: newFakeClient(apiObjs...)}
-			got, err := r.sandboxCanAdopt(t.Context(), sandbox)
+			got, err := r.sandboxAdoptionRefusalReason(t.Context(), sandbox)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 		})
 	}
 }
 
-func TestSandboxCanAdoptReturnsUnknownOnReadError(t *testing.T) {
+func TestSandboxAdoptionRefusalReasonReturnsErrorOnReadError(t *testing.T) {
 	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
 		Name:      "test-sandbox",
 		Namespace: "test-ns",
@@ -6130,9 +6139,22 @@ func TestSandboxCanAdoptReturnsUnknownOnReadError(t *testing.T) {
 		},
 	})}
 
-	got, err := r.sandboxCanAdopt(t.Context(), sandbox)
+	got, err := r.sandboxAdoptionRefusalReason(t.Context(), sandbox)
 	require.Error(t, err)
-	assert.Equal(t, sandboxAdoptionUnknown, got)
+	assert.Empty(t, got)
+}
+
+func TestSandboxAdoptionRefusalReasonRequiresAPIReader(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test-sandbox",
+		Namespace: "test-ns",
+		UID:       sandboxUID,
+	}}
+	r := SandboxReconciler{}
+
+	got, err := r.sandboxAdoptionRefusalReason(t.Context(), sandbox)
+	require.EqualError(t, err, "APIReader is required before adopting an unowned child")
+	assert.Empty(t, got)
 }
 
 func TestReconcilePVCsReturnsErrorWhenSandboxReadFails(t *testing.T) {

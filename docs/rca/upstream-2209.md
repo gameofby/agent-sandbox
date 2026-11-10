@@ -16,11 +16,14 @@ The Sandbox controller cache lags behind the Kubernetes API server. When orphan 
 
 The controller resolves this race before it adopts an unowned child:
 - The controller uses an uncached direct API reader before adopting unowned PVCs, Pods, or Services.
-- Helper `sandboxCanAdopt` verifies the current Sandbox object directly from the API server.
+- The reconciler requires an API reader. It does not fall back to the cache.
+- Helper `sandboxAdoptionRefusalReason` verifies the current Sandbox object directly from the API server.
+- Helper `canAdoptUnownedChild` centralizes the adoption gate and refusal log for all three resource types.
 - The reconciler adopts a child only when the live Sandbox has the same UID
   and no deletion timestamp.
-- The controller reports why adoption is blocked when the Sandbox is
-  deleting, absent, recreated with a different UID, or cannot be read.
+- The controller logs why adoption is blocked when the Sandbox is deleting,
+  absent, or recreated with a different UID. It returns an error when the API
+  reader is missing or the read fails.
 
 Pods follow the same orphan-deletion path as PVCs and Services. The controller
 must guard all three resource types because any re-adopted dependent can
@@ -29,5 +32,10 @@ return to the deleting Sandbox and become eligible for garbage collection.
 ## Verification
 
 Unit tests in `controllers/sandbox_controller_test.go` verify stale cache
-rejection during deletion, absence, UID mismatch, and API reader errors. A
-table test covers every adoption decision.
+rejection during deletion, absence, UID mismatch, API reader errors, and a
+missing API reader.
+
+The following focused checks pass with Go 1.27.3:
+
+- `go test ./controllers -count=1`
+- `go vet ./controllers`
