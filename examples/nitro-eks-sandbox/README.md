@@ -101,7 +101,7 @@ kubectl get node "${SANDBOX_NODE}" -o jsonpath='{.status.nodeInfo.kernelVersion}
 6.18.56
 ```
 
-The versions should differ because the sandbox boots its own kernel. Run these commands to compare the sandbox uptime with the node uptime:
+Read the two kernel versions in the command output. A different version shows that the sandbox boots its own kernel. Run these commands to compare the sandbox uptime with the node uptime:
 
 ```shell
 # Uptime inside the sandbox
@@ -123,7 +123,7 @@ kubectl exec vscode-nitro -- cat /sys/class/dmi/id/product_name
 m8a.enclave
 ```
 
-The first number in each uptime output is the number of seconds since that system booted. The sandbox value starts when AWS Nitro Sandbox starts the VM. The node value starts when the node boots. The values should differ. When `kubectl debug` prints the name of the debug pod, delete that pod.
+The first number in each uptime output is the number of seconds since that system booted. The sandbox value starts when AWS Nitro Sandbox starts the VM. The node value starts when the node boots. Compare the two values. Different values show separate boot times. When `kubectl debug` prints the name of the debug pod, delete that pod.
 
 ## Step 5: Open VS Code
 

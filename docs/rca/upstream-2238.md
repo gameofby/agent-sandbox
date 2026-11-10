@@ -51,8 +51,8 @@ CodeRabbit requested changes for three documentation defects.
    pod IP remained reachable to other cluster pods because no NetworkPolicy
    restricted that traffic.
 
-The first Matt Standards review also found passive voice, chained sentences,
-term-order problems, and an unclear YAML comment. The first Matt Spec review
+The first standards review also found passive voice, chained sentences,
+term-order problems, and an unclear YAML comment. The first specification review
 found the missing node uptime comparison.
 
 ## Correction
@@ -96,7 +96,7 @@ The following checks pass:
 - Semantic comparison of the embedded README manifest and the YAML file
 - Relative Markdown link check
 
-These repository checks are blocked because the host has no Go executable:
+The host has no Go executable, so these repository checks did not run:
 
 - `make all`
 - `make test-unit`
