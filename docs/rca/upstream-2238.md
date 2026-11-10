@@ -20,13 +20,14 @@ remove the resources.
 - Current upstream PR head: `87ef7815bf3f0882bee7138b859c7de9c87dd772`
 - Corrective branch: `codex/issue-2238-rev2`
 - Reviewed example correction head:
-  `73bae4a8c6e563ce891920d542bd6874f5ecd01a`
+  `17541ef6206e58b8269e0118d89cbfb0d4ef99b0`
 - Example corrective commits after the current upstream head:
   - `590665c68d7f01bb59807ed831d93179a9f26d20`
   - `10915c3c5a0276ede6ef859043936d43fd570450`
   - `3df91cf872e1d608296a3702fe53109173dccfd3`
   - `eae61cbfbfde957e91371135da2ebb8f834c68f7`
   - `73bae4a8c6e563ce891920d542bd6874f5ecd01a`
+  - `17541ef6206e58b8269e0118d89cbfb0d4ef99b0`
 
 The branch preserves the upstream commits and appends corrective commits. It
 does not rewrite upstream history.
@@ -71,6 +72,8 @@ The first Matt Spec review found the missing node uptime comparison.
 The corrective commits make these changes:
 
 - Use `kubectl debug` on the hosting node to read `/proc/uptime`.
+- Attach to the debug container with `--stdin` so the command returns the node
+  uptime.
 - Tell readers to compare the boot-time value from the sandbox and the node.
 - Describe pod-IP reachability and the password authentication control.
 - Rewrite affected prose for active voice and one idea per sentence.
@@ -79,9 +82,12 @@ The corrective commits make these changes:
 - Make the YAML comments explain why the RuntimeClass and pinned image matter.
 - Link the manifest from the documentation and show how to delete the temporary
   node debug pod named in the `kubectl debug` output.
+- Apply and delete the manifest from its canonical raw URL so the guide does
+  not require a local file.
 - Add a cleanup command for the named debug pod.
-- Add the requested node uptime check without replacing the existing kernel and
-  product-name checks.
+- Add the requested node uptime check and keep the existing kernel check.
+- Remove the product-name check because the issue asks for kernel and uptime
+  comparisons only.
 
 The correction preserves the one-command cluster setup, the single Sandbox
 manifest, direct port-forward access, code-server password authentication, and
@@ -107,6 +113,9 @@ standards after the first corrective set.
 - A later Standards review found that the guide did not link its manifest and
   did not give a complete debug-pod cleanup action.
 - Later corrections add the link and a cleanup command for the named debug pod.
+- A later Spec review found that `kubectl debug` did not attach to the command
+  and that the product-name check was outside the requested scope.
+- The latest correction adds `--stdin` and removes the product-name check.
 
 The reviewers kept the raw upstream commit messages out of the correction set.
 Rewriting those messages would alter preserved upstream history. The reviewers
@@ -129,8 +138,8 @@ description.
 
 `make all` completed generation, build, Go lint, API lint, and most Go unit
 tests. The suite then failed in seven PTY timing subtests and in Python test
-setup because Python 3.9 cannot install `anyio==4.14.2`. The exact result is
-recorded in the counterpart issue.
+setup because Python 3.9 cannot install `anyio==4.14.2`. The counterpart issue
+records the exact result.
 
 ## Open work
 

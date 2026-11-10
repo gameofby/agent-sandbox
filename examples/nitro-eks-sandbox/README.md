@@ -77,7 +77,8 @@ spec:
 Apply it and wait for the sandbox to be ready:
 
 ```shell
-kubectl apply -f sandbox-nitro-eks.yaml
+MANIFEST_URL="https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/main/examples/nitro-eks-sandbox/sandbox-nitro-eks.yaml"
+kubectl apply -f "$MANIFEST_URL"
 kubectl wait --for=condition=Ready sandbox/vscode-nitro --timeout=5m
 kubectl get sandbox vscode-nitro
 ```
@@ -103,23 +104,22 @@ kubectl get node "${SANDBOX_NODE}" -o jsonpath='{.status.nodeInfo.kernelVersion}
 6.18.56
 ```
 
-The two versions differ, so the sandbox boots its own kernel. Run these commands to compare its uptime with the node and to read the VM product name:
+The two versions differ, so the sandbox boots its own kernel. Run these
+commands to compare its sandbox uptime with the node uptime:
 
 ```shell
 kubectl exec vscode-nitro -- cat /proc/uptime
 
 kubectl debug node/"${SANDBOX_NODE}" \
+  --stdin \
   --image=busybox:1.36 \
   --profile=sysadmin \
   -- chroot /host cat /proc/uptime
-
-kubectl exec vscode-nitro -- cat /sys/class/dmi/id/product_name
 ```
 
 ```text
 45.59 43.62
 45983.17 183927.40
-m8a.enclave
 ```
 
 The first value in each uptime output reports the number of seconds since that
@@ -156,7 +156,7 @@ The example publishes no Service of type LoadBalancer, NodePort, or Ingress. Use
 Stop the port-forward with `Ctrl+C`, then delete the sandbox:
 
 ```shell
-kubectl delete -f sandbox-nitro-eks.yaml
+kubectl delete -f "$MANIFEST_URL"
 ```
 
 To remove the demo cluster entirely:
