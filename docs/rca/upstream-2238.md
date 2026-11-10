@@ -25,8 +25,8 @@ code-server with `kubectl port-forward` and how to remove the resources.
   - `f962d78c`: complete the version, preview, and grammar corrections.
   - `1c782a64`: record the full-suite limits.
 
-The original commit remains unchanged. The corrections append five commits to
-branch `codex/issue-2238`.
+The original commit remains unchanged. The branch appends corrective commits
+after the original PR head.
 
 ## Verification
 
@@ -66,15 +66,15 @@ found the missing node uptime comparison.
 
 The corrective commits make these changes:
 
-- It adds repository clone and directory-change commands before
+- Add repository clone and directory-change commands before
   `kubectl apply`.
-- It uses `kubectl debug` on the hosting node to read the node uptime from
+- Use `kubectl debug` on the hosting node to read the node uptime from
   `/proc/uptime`.
-- It tells readers to compare the first uptime value from the sandbox and the
+- Tell readers to compare the first uptime value from the sandbox and the
   node.
-- It describes pod-IP reachability and the password and NetworkPolicy controls.
-- It rewrites affected prose for active voice and one idea per sentence.
-- It identifies `isolated-sandbox` as a RuntimeClass.
+- Describe pod-IP reachability and the password and NetworkPolicy controls.
+- Rewrite affected prose for active voice and one idea per sentence.
+- Identify `isolated-sandbox` as a RuntimeClass.
 
 The correction preserves the one-command cluster setup, the single Sandbox
 manifest, direct port-forward access, password authentication, and cleanup
@@ -91,9 +91,8 @@ to delete that pod.
 ## Reviews
 
 The reviews identified and corrected passive voice, chained sentences, vague
-review names, unsupported version wording, an omitted Hugo preview limit, and
-grammar defects. This RCA is a required fork-tracker artifact. It is outside
-the upstream pull request scope.
+review names, unsupported version wording, and grammar defects. This RCA is a
+required fork-tracker artifact. It is outside the upstream pull request scope.
 
 ## Checks
 
@@ -104,9 +103,12 @@ The following checks pass:
 - Semantic comparison of the embedded README manifest and the YAML file
 - Relative Markdown link check
 - `make toc-verify`
+- Hugo Extended 0.163.3 rendered preview
 
-The example README and documentation-site card mount into the Hugo site. Hugo
-is unavailable in this environment, so the rendered-preview check did not run.
+The example README and documentation-site card mount into the Hugo site. The
+Hugo Extended 0.163.3 build rendered 228 pages. The rendered Nitro page includes
+the manifest link, node uptime comparison, access command, and NetworkPolicy
+guidance.
 
 `make all` completed generation, build, Go lint, and API lint. It then stopped
 in the full unit suite. Five macOS PTY timing tests in
