@@ -19,7 +19,7 @@ remove the resources.
 - Original reviewed PR head: `4356627acf280a81bfda4ee71bca57b62ee6d2f0`
 - Current upstream PR head: `87ef7815bf3f0882bee7138b859c7de9c87dd772`
 - Corrective branch: `codex/issue-2238-rev2`
-- Corrective commits after the current upstream head:
+- Example corrective commits after the current upstream head:
   - `590665c68d7f01bb59807ed831d93179a9f26d20`
   - `10915c3c5a0276ede6ef859043936d43fd570450`
   - `3df91cf872e1d608296a3702fe53109173dccfd3`
@@ -73,6 +73,8 @@ The corrective commits make these changes:
 - State that Nitro Sandbox requires EKS 1.36 or later.
 - Link readers to the authoritative Region availability documentation.
 - Make the YAML comments explain why the RuntimeClass and pinned image matter.
+- Link the manifest from the documentation and show how to delete the
+  temporary node debug pod.
 - Add the requested node uptime check without replacing the existing kernel and
   product-name checks.
 

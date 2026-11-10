@@ -48,7 +48,9 @@ kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 
 ## Step 3: Deploy VS Code in an Agent Sandbox
 
-The manifest below (`sandbox-nitro-eks.yaml`) defines a `Sandbox` that runs code-server and requests the `isolated-sandbox` runtime. That one field is the only Nitro-specific line.
+The [example manifest](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/examples/nitro-eks-sandbox/sandbox-nitro-eks.yaml)
+defines a `Sandbox` that runs code-server and requests the `isolated-sandbox`
+runtime. That one field is the only Nitro-specific line.
 
 ```yaml
 apiVersion: agents.x-k8s.io/v1beta1
@@ -123,8 +125,13 @@ m8a.enclave
 The first value in each uptime output reports the number of seconds since that
 system booted. The sandbox value starts when Nitro Sandbox starts the VM. The
 node value starts when the node boots. Different values confirm separate boot
-times. Delete the debug pod that `kubectl debug` creates when you finish the
-check.
+times. Delete the debug pod when you finish the check:
+
+```shell
+kubectl delete pods \
+  --selector=app.kubernetes.io/managed-by=kubectl-debug \
+  --field-selector="spec.nodeName=${SANDBOX_NODE}"
+```
 
 ## Step 5: Open VS Code
 
