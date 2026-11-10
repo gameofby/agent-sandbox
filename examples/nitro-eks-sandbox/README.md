@@ -2,11 +2,11 @@
 
 ## Overview
 
-This example runs VS Code in the browser ([code-server](https://github.com/coder/code-server)) inside an Agent Sandbox that is isolated by an [AWS Nitro Sandbox](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) on an [Amazon EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) cluster, and opens it with `kubectl port-forward`.
+This example runs VS Code in the browser ([code-server](https://github.com/coder/code-server)) inside an [AWS Nitro Sandbox](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) on an [Amazon EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) cluster. AWS Nitro Sandbox isolates the Agent Sandbox. Use `kubectl port-forward` to open VS Code.
 
-A pod that sets `runtimeClassName: isolated-sandbox` runs in its own Nitro Sandbox: a lightweight VM with its own kernel and hardware-level isolation of its CPU and memory, created by the Nitro Hypervisor. The pod's containers, image and spec are unchanged, and the kubelet still sees an ordinary pod, so `kubectl exec`, `logs` and `port-forward` work as they do for any other pod.
+When a pod sets `runtimeClassName: isolated-sandbox`, the Nitro Hypervisor starts a lightweight VM with its own kernel. The VM isolates the pod's CPU and memory at the hardware level. The pod keeps its containers, image, and spec. The kubelet still sees an ordinary pod, so `kubectl exec`, `logs`, and `port-forward` work.
 
-EKS Auto Mode provides everything else. A new Auto Mode cluster comes with the `isolated-sandbox` RuntimeClass, and launches a node for a sandboxed pod when one is needed. No node pool, DaemonSet installer or RuntimeClass registration is needed.
+EKS Auto Mode provides everything else. A new Auto Mode cluster includes the `isolated-sandbox` RuntimeClass. Auto Mode also launches a node when a pod requests a sandbox. The reader does not need to create a node pool, install a DaemonSet, or register the RuntimeClass.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ EKS Auto Mode provides everything else. A new Auto Mode cluster comes with the `
 
 > **Note:** this command creates billable AWS resources: an EKS cluster, its VPC, and the EC2 instances Auto Mode launches for your pods. See [Cleanup](#cleanup) to remove them.
 
-AWS Nitro Sandbox is supported on Amazon EKS 1.36 or higher. Check the [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) for the supported Regions, then replace `<REGION>` and `<EKS VERSION>` below:
+AWS supports Nitro Sandbox on Amazon EKS 1.36 or later. Check the [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) for the supported Regions. Replace `<REGION>` and `<EKS VERSION>` below:
 
 ```shell
 eksctl create cluster --name nitro-sandbox-demo --region <REGION> --version <EKS VERSION> --enable-auto-mode
@@ -103,17 +103,32 @@ kubectl get node "${SANDBOX_NODE}" -o jsonpath='{.status.nodeInfo.kernelVersion}
 6.18.56
 ```
 
-The two versions differ because the sandbox boots its own kernel. Two more signs that the pod runs in its own VM: the kernel's uptime matches the pod's age rather than the node's, and the VM reports its own product name.
+The two versions differ, so the sandbox boots its own kernel. Run these commands to compare its uptime with the node and to read the VM product name:
 
 ```shell
+# Uptime inside the sandbox
 kubectl exec vscode-nitro -- cat /proc/uptime
+
+# Uptime of the node that hosts the sandbox
+kubectl debug node/"${SANDBOX_NODE}" \
+  --image=busybox:1.36 \
+  --profile=sysadmin \
+  -- chroot /host cat /proc/uptime
+
 kubectl exec vscode-nitro -- cat /sys/class/dmi/id/product_name
 ```
 
 ```text
 45.59 43.62
+45983.17 183927.40
 m8a.enclave
 ```
+
+The first value in each uptime output reports the number of seconds since that
+system booted. The sandbox value starts when Nitro Sandbox starts the VM. The
+node value starts when the node boots. Different values confirm separate boot
+times. Delete the debug pod that `kubectl debug` creates when you finish the
+check.
 
 ## Step 5: Open VS Code
 
@@ -129,9 +144,9 @@ In another terminal, read the password that code-server generated:
 kubectl exec vscode-nitro -- cat /home/coder/.config/code-server/config.yaml
 ```
 
-Open http://localhost:8080 in your browser, sign in with the password, and you have VS Code with a terminal, running in the sandbox. If port 8080 is already in use on your machine, pick another local port, for example `kubectl port-forward pod/vscode-nitro 18080:8080`.
+Open http://localhost:8080 in your browser and sign in with the password. You now have VS Code and a terminal inside the sandbox. If another process uses local port 8080, choose another port. For example, run `kubectl port-forward pod/vscode-nitro 18080:8080`.
 
-The editor is not published outside the cluster: there is no Service of type LoadBalancer, no NodePort and no Ingress. Inside the cluster, code-server listens on `0.0.0.0:8080`, so any other pod in the cluster can reach the editor by the pod's IP address; the password sign-in still applies.
+The example publishes no Service of type LoadBalancer, NodePort, or Ingress. Users outside the cluster cannot reach code-server through those resources. Inside the cluster, code-server listens on `0.0.0.0:8080`. Any other pod can reach the editor by the pod IP address. Password authentication still applies.
 
 ## Cleanup
 
@@ -150,4 +165,4 @@ eksctl delete cluster --name nitro-sandbox-demo --region <REGION>
 ## Learn more
 
 - [Amazon EKS documentation for Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)
-- [AWS Nitro Sandbox Blueprints](https://aws-samples.github.io/sample-eks-nitro-sandbox): more Agent Sandbox examples on Amazon EKS, including warm pools, coding agents, storage and EKS Pod Identity.
+- [AWS Nitro Sandbox Blueprints](https://aws-samples.github.io/sample-eks-nitro-sandbox) describes more Agent Sandbox examples on Amazon EKS, including warm pools, coding agents, storage, and EKS Pod Identity.
