@@ -7,7 +7,7 @@ spec:
     spec:
       # EKS Auto Mode ships this RuntimeClass. A pod that names it runs in its
       # own AWS Nitro Sandbox, a lightweight VM with its own kernel, on a node
-      # that Auto Mode launches for it. No other field changes.
+      # that Auto Mode launches for it. The example adds no other Nitro-specific fields.
       runtimeClassName: isolated-sandbox
       containers:
       - name: code-server

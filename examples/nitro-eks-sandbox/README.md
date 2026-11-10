@@ -2,11 +2,11 @@
 
 ## Overview
 
-This example runs VS Code in the browser ([code-server](https://github.com/coder/code-server)) inside an Agent Sandbox that is isolated by an [AWS Nitro Sandbox](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) on an [Amazon EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) cluster, and opens it with `kubectl port-forward`.
+This example runs VS Code in the browser ([code-server](https://github.com/coder/code-server)) inside an Agent Sandbox. The Agent Sandbox uses an [AWS Nitro Sandbox](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) on an [Amazon EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) cluster. AWS Nitro Sandbox starts selected pods in a lightweight VM with its own kernel and hardware isolation. Use `kubectl port-forward` to open code-server.
 
-A pod that sets `runtimeClassName: isolated-sandbox` runs in its own Nitro Sandbox: a lightweight VM with its own kernel and hardware-level isolation of its CPU and memory, created by the Nitro Hypervisor. The pod's containers, image and spec are unchanged, and the kubelet still sees an ordinary pod, so `kubectl exec`, `logs` and `port-forward` work as they do for any other pod.
+When a pod sets `runtimeClassName: isolated-sandbox`, AWS Nitro Sandbox starts a VM with its own kernel. The Nitro Hypervisor isolates the VM's CPU and memory. The pod keeps its containers, image, and spec. The kubelet still sees an ordinary pod. As a result, `kubectl exec`, `logs`, and `port-forward` work for this pod.
 
-EKS Auto Mode provides everything else. A new Auto Mode cluster comes with the `isolated-sandbox` RuntimeClass, and launches a node for a sandboxed pod when one is needed. No node pool, DaemonSet installer or RuntimeClass registration is needed.
+EKS Auto Mode provides the rest of the configuration. A new Auto Mode cluster includes the `isolated-sandbox` RuntimeClass. Auto Mode also launches a node for a sandboxed pod when the pod requests one. You do not need to create a node pool, install a DaemonSet, or register the RuntimeClass.
 
 ## Prerequisites
 
@@ -16,13 +16,13 @@ EKS Auto Mode provides everything else. A new Auto Mode cluster comes with the `
 
 ## Step 1: Create an EKS Auto Mode cluster
 
-> **Note:** this command creates billable AWS resources: an EKS cluster, its VPC, and the EC2 instances Auto Mode launches for your pods. See [Cleanup](#cleanup) to remove them.
+> **Note:** this command creates billable AWS resources. It creates an EKS cluster, its VPC, and the EC2 instances that Auto Mode launches for your pods. See [Cleanup](#cleanup) to remove them.
 
 ```shell
 eksctl create cluster --name nitro-sandbox-demo --region us-east-1 --version 1.37 --enable-auto-mode
 ```
 
-Check that the cluster has the Nitro Sandbox runtime classes:
+Run this command to check the Nitro Sandbox runtime classes on the cluster:
 
 ```shell
 kubectl get runtimeclass
@@ -34,11 +34,11 @@ confidential-sandbox   confidential-sandbox   4d11h
 isolated-sandbox       isolated-sandbox       4d11h
 ```
 
-This example uses `isolated-sandbox`. `confidential-sandbox` is described in the [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html).
+This example uses `isolated-sandbox`. The [Amazon EKS documentation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html) describes `confidential-sandbox`.
 
 ## Step 2: Install the Agent Sandbox Controller
 
-Install the Agent Sandbox controller following the [Installation Guide](../../README.md#installation), then wait for it to be ready:
+Follow the [Installation Guide](../../README.md#installation) to install the Agent Sandbox controller. Then wait for the controller to become ready:
 
 ```shell
 kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
@@ -46,7 +46,7 @@ kubectl -n agent-sandbox-system rollout status deploy/agent-sandbox-controller
 
 ## Step 3: Deploy VS Code in an Agent Sandbox
 
-The manifest below (`sandbox-nitro-eks.yaml`) defines a `Sandbox` that runs code-server and requests the `isolated-sandbox` runtime. That one field is the only Nitro-specific line.
+The manifest below (`sandbox-nitro-eks.yaml`) defines a `Sandbox` that runs code-server and requests the `isolated-sandbox` RuntimeClass. That field is the only Nitro-specific value.
 
 ```yaml
 apiVersion: agents.x-k8s.io/v1beta1
@@ -68,9 +68,11 @@ spec:
             memory: 2Gi
 ```
 
-Apply it and wait for the sandbox to be ready:
+Clone the repository and enter this example directory. Run these commands to apply the manifest and wait for the sandbox to become ready:
 
 ```shell
+git clone https://github.com/kubernetes-sigs/agent-sandbox.git
+cd agent-sandbox/examples/nitro-eks-sandbox
 kubectl apply -f sandbox-nitro-eks.yaml
 kubectl wait --for=condition=Ready sandbox/vscode-nitro --timeout=5m
 kubectl get sandbox vscode-nitro
@@ -81,9 +83,9 @@ NAME           READY   REASON              AGE
 vscode-nitro   True    DependenciesReady   25s
 ```
 
-## Step 4: Verify the Isolation
+## Step 4: Verify the isolation
 
-Compare the kernel inside the sandbox with the kernel of the node it runs on:
+Run these commands to compare the kernel inside the sandbox with the kernel on the node:
 
 ```shell
 # Kernel inside the sandbox (the Nitro Sandbox's own kernel)
@@ -99,45 +101,57 @@ kubectl get node "${SANDBOX_NODE}" -o jsonpath='{.status.nodeInfo.kernelVersion}
 6.18.56
 ```
 
-The two versions differ because the sandbox boots its own kernel. Two more signs that the pod runs in its own VM: the kernel's uptime matches the pod's age rather than the node's, and the VM reports its own product name.
+The versions should differ because the sandbox boots its own kernel. Run these commands to compare the sandbox uptime with the node uptime:
 
 ```shell
+# Uptime inside the sandbox
 kubectl exec vscode-nitro -- cat /proc/uptime
+
+# Uptime of the node hosting the sandbox
+kubectl debug node/"${SANDBOX_NODE}" \
+  --image=busybox:1.36 \
+  --profile=sysadmin \
+  -- chroot /host cat /proc/uptime
+
+# Product name reported by the sandbox VM
 kubectl exec vscode-nitro -- cat /sys/class/dmi/id/product_name
 ```
 
 ```text
 45.59 43.62
+45983.17 183927.40
 m8a.enclave
 ```
 
+The first number in each uptime output is the number of seconds since that system booted. The sandbox value starts when AWS Nitro Sandbox starts the VM. The node value starts when the node boots. The values should differ. When `kubectl debug` prints the name of the debug pod, delete that pod.
+
 ## Step 5: Open VS Code
 
-Forward a local port to the sandbox's pod. The pod has the same name as the `Sandbox`:
+Run this command to forward a local port to the sandbox pod. The pod has the same name as the `Sandbox`:
 
 ```shell
 kubectl port-forward pod/vscode-nitro 8080:8080
 ```
 
-In another terminal, read the password that code-server generated:
+Run this command in another terminal to read the password that code-server generated:
 
 ```shell
 kubectl exec vscode-nitro -- cat /home/coder/.config/code-server/config.yaml
 ```
 
-Open http://localhost:8080 in your browser, sign in with the password, and you have VS Code with a terminal, running in the sandbox. If port 8080 is already in use on your machine, pick another local port, for example `kubectl port-forward pod/vscode-nitro 18080:8080`.
+Open http://localhost:8080 in your browser. Sign in with the password. You now have VS Code and a terminal inside the sandbox. If port 8080 is already in use on your machine, choose another local port. For example, run `kubectl port-forward pod/vscode-nitro 18080:8080`.
 
-The editor is not published outside the cluster: there is no Service of type LoadBalancer, no NodePort and no Ingress, and only your `kubectl` session reaches it.
+The example does not create a Service of type LoadBalancer, a NodePort, or an Ingress. Users outside the cluster cannot reach code-server through those resources. Because code-server listens on `0.0.0.0:8080`, other pods can connect to the pod IP. Password authentication still applies. Add a NetworkPolicy if the sandbox must accept connections only from the `kubectl port-forward` session.
 
 ## Cleanup
 
-Stop the port-forward with `Ctrl+C`, then delete the sandbox:
+Stop the port-forward with `Ctrl+C`. Then run this command to delete the sandbox:
 
 ```shell
 kubectl delete -f sandbox-nitro-eks.yaml
 ```
 
-To remove the demo cluster entirely:
+Run this command to remove the demo cluster:
 
 ```shell
 eksctl delete cluster --name nitro-sandbox-demo --region us-east-1
