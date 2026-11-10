@@ -143,9 +143,9 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 // sandboxAdoptionRefusalReason returns why the live Sandbox cannot adopt an
 // unowned child. An empty reason means the controller may adopt the child.
 // The informer cache can show an unowned child before it shows the Sandbox
-// deletion. The garbage collector records the deletion before it orphans
-// children. The controller therefore reads the Sandbox from the API server,
-// where the deletion is visible.
+// deletion. The API server records the deletion before the garbage collector
+// orphans children. The controller therefore reads the Sandbox from the API
+// server, where the deletion is visible.
 func (r *SandboxReconciler) sandboxAdoptionRefusalReason(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (string, error) {
 	if r.APIReader == nil {
 		return "", fmt.Errorf("APIReader is required before adopting an unowned child")
