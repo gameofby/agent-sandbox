@@ -16,11 +16,17 @@ code-server with `kubectl port-forward` and how to remove the resources.
 - PR base reference: `67e670b3e4a0cc1c26fef561cb8243ac389bfccf`
 - Review merge base: `993fd4aa9f576b8374b8810ef45e7305ed2dd95d`
 - Original PR head: `4356627acf280a81bfda4ee71bca57b62ee6d2f0`
-- Corrective commit: `ce540553`
 - Original PR commit count: 1
+- Corrective commits:
+  - `ce540553`: make the manifest reachable, add the node uptime check, and
+    correct the access statement.
+  - `32c07b3f`: record the initial RCA and review history.
+  - `2d15456f`: clarify the isolation comparison and review terminology.
+  - `f962d78c`: complete the version, preview, and grammar corrections.
+  - `1c782a64`: record the full-suite limits.
 
-The original commit remains unchanged. The correction appends a second commit
-to branch `codex/issue-2238`.
+The original commit remains unchanged. The corrections append five commits to
+branch `codex/issue-2238`.
 
 ## Verification
 
@@ -58,7 +64,7 @@ found the missing node uptime comparison.
 
 ## Correction
 
-The corrective commit makes these changes:
+The corrective commits make these changes:
 
 - It adds repository clone and directory-change commands before
   `kubectl apply`.
@@ -84,10 +90,10 @@ to delete that pod.
 
 ## Reviews
 
-The final fresh standards review found no remaining documented-standard
-violations or Fowler smells. The final fresh specification review found no
-missing or incorrect functional requirement. This RCA is a required
-fork-tracker artifact. It is outside the upstream pull request scope.
+The reviews identified and corrected passive voice, chained sentences, vague
+review names, unsupported version wording, an omitted Hugo preview limit, and
+grammar defects. This RCA is a required fork-tracker artifact. It is outside
+the upstream pull request scope.
 
 ## Checks
 
@@ -115,6 +121,6 @@ available for the installed Python 3.9.
 
 - Repeat the EKS end-to-end run in an AWS account if reviewers require new
   runtime evidence.
-- Run `make all`, `make test-unit`, and `make toc-verify` on a host with the
-  repository Go toolchain.
+- Run `make all` and `make test-unit` on a supported Linux host with a
+  compatible Python version.
 - Obtain explicit user confirmation before any update to upstream PR #2239.
