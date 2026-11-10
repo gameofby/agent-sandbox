@@ -114,9 +114,9 @@ The Hugo build rendered 228 pages. The rendered Nitro page includes the
 manifest link, node uptime comparison, access command, and pod-IP reachability
 description.
 
-`make all` completed generation, build, Go lint, API lint, and focused
-controller tests. The remaining suite is blocked in this macOS environment by
-five PTY timing tests and by `anyio==4.14.2` on Python 3.9. The exact result is
+`make all` completed generation, build, Go lint, API lint, and most Go unit
+tests. The suite then failed in seven PTY timing subtests and in Python test
+setup because Python 3.9 cannot install `anyio==4.14.2`. The exact result is
 recorded in the counterpart issue.
 
 ## Open work
