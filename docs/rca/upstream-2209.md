@@ -57,6 +57,10 @@ Services stay unowned.
 - Review merge base: `993fd4aa9f576b8374b8810ef45e7305ed2dd95d`
 - Fork branch: `codex/issue-2209`
 - Prior corrective head: `7ee5f0888faedcae5a465546715223b23f6c9c44`
+- Reviewed corrective head:
+  `9500cb0e587bef7ad28a6a55c6e44cb424f81c39`
+- Reviewed corrective range:
+  `3f234bbbc63b4c637c51bca4c8095b1a094955e8..9500cb0e587bef7ad28a6a55c6e44cb424f81c39`
 
 The branch preserves the original PR commit and appends corrective commits.
 It does not rewrite upstream history.
