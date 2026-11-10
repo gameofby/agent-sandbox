@@ -19,11 +19,14 @@ remove the resources.
 - Original reviewed PR head: `4356627acf280a81bfda4ee71bca57b62ee6d2f0`
 - Current upstream PR head: `87ef7815bf3f0882bee7138b859c7de9c87dd772`
 - Corrective branch: `codex/issue-2238-rev2`
+- Reviewed example correction head:
+  `73bae4a8c6e563ce891920d542bd6874f5ecd01a`
 - Example corrective commits after the current upstream head:
   - `590665c68d7f01bb59807ed831d93179a9f26d20`
   - `10915c3c5a0276ede6ef859043936d43fd570450`
   - `3df91cf872e1d608296a3702fe53109173dccfd3`
   - `eae61cbfbfde957e91371135da2ebb8f834c68f7`
+  - `73bae4a8c6e563ce891920d542bd6874f5ecd01a`
 
 The branch preserves the upstream commits and appends corrective commits. It
 does not rewrite upstream history.
@@ -74,8 +77,9 @@ The corrective commits make these changes:
 - State that Nitro Sandbox requires EKS 1.36 or later.
 - Link readers to the authoritative Region availability documentation.
 - Make the YAML comments explain why the RuntimeClass and pinned image matter.
-- Link the manifest from the documentation and show how to delete the
-  temporary node debug pod.
+- Link the manifest from the documentation and show how to delete the temporary
+  node debug pod named in the `kubectl debug` output.
+- Add a cleanup command for the named debug pod.
 - Add the requested node uptime check without replacing the existing kernel and
   product-name checks.
 
@@ -102,7 +106,7 @@ standards after the first corrective set.
 - The first final Spec review passed after those corrections.
 - A later Standards review found that the guide did not link its manifest and
   did not give a complete debug-pod cleanup action.
-- Later corrections add the link and a node-scoped cleanup command.
+- Later corrections add the link and a cleanup command for the named debug pod.
 
 The reviewers kept the raw upstream commit messages out of the correction set.
 Rewriting those messages would alter preserved upstream history. The reviewers
