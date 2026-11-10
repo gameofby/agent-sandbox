@@ -1431,6 +1431,27 @@ func (r *SandboxClaimReconciler) adoptSandboxFromCandidates(ctx context.Context,
 				}
 			}
 
+			fresh := &v1beta1.Sandbox{}
+			if err := r.authoritativeReader().Get(ctx, client.ObjectKeyFromObject(adopted), fresh); err != nil {
+				if k8errors.IsNotFound(err) {
+					logger.V(4).Info("Assigned sandbox disappeared before adoption", "sandbox", adopted.Name, "claim", claim.Name)
+					if cleanupErr := r.removeAssignedSandboxReference(ctx, claim, adopted.Name); cleanupErr != nil {
+						return false, cleanupErr
+					}
+					return false, nil
+				}
+				r.WarmSandboxQueue.Add(namespacedWarmPoolNameForQueue, adoptedKey)
+				return false, fmt.Errorf("reading assigned sandbox %s before adoption: %w", adopted.Name, err)
+			}
+			if err := verifySandboxCandidate(fresh, claim); err != nil {
+				logger.V(4).Info("Assigned sandbox became ineligible before adoption", "sandbox", adopted.Name, "claim", claim.Name, "reason", err.Error())
+				if cleanupErr := r.removeAssignedSandboxReference(ctx, claim, adopted.Name); cleanupErr != nil {
+					return false, cleanupErr
+				}
+				return false, nil
+			}
+			fresh.DeepCopyInto(adopted)
+
 			// Call helper to complete adoption (patch sandbox)
 			if err := r.completeAdoption(ctx, claim, adopted); err != nil {
 				if !k8errors.IsNotFound(err) && !k8errors.IsConflict(err) {
@@ -3045,6 +3066,9 @@ func verifySandboxCandidate(candidate *v1beta1.Sandbox, claim *extensionsv1beta1
 
 	if err := isAdoptable(candidate); err != nil {
 		return err
+	}
+	if isSandboxTerminal(candidate) {
+		return fmt.Errorf("sandbox %s/%s has reached a terminal state", candidate.Namespace, candidate.Name)
 	}
 
 	warmPoolName := getWarmPoolName(candidate)

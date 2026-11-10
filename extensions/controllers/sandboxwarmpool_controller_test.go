@@ -3540,18 +3540,7 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 	scheme := newTestScheme()
 	poolNameHash := sandboxcontrollers.NameHash(poolName)
 
-	warmPool := &extensionsv1beta1.SandboxWarmPool{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      poolName,
-			Namespace: poolNamespace,
-		},
-		Spec: extensionsv1beta1.SandboxWarmPoolSpec{
-			Replicas: &replicas,
-			TemplateRef: extensionsv1beta1.SandboxTemplateRef{
-				Name: templateName,
-			},
-		},
-	}
+	warmPool := newTestPool(poolName, templateName, replicas)
 
 	terminalCases := []struct {
 		name       string
@@ -3586,6 +3575,39 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 				{
 					Type:   string(sandboxv1beta1.SandboxConditionFinished),
 					Status: metav1.ConditionTrue,
+					Reason: sandboxv1beta1.SandboxReasonPodSucceeded,
+				},
+			},
+		},
+		{
+			name: "Finished=True without a Ready condition",
+			age:  30 * time.Second,
+			conditions: []metav1.Condition{
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionFinished),
+					Status: metav1.ConditionTrue,
+					Reason: sandboxv1beta1.SandboxReasonPodFailed,
+				},
+			},
+		},
+		{
+			name: "Ready=False with Reason=PodFailed without Finished=True",
+			age:  30 * time.Second,
+			conditions: []metav1.Condition{
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionReady),
+					Status: metav1.ConditionFalse,
+					Reason: sandboxv1beta1.SandboxReasonPodFailed,
+				},
+			},
+		},
+		{
+			name: "Ready=False with Reason=PodSucceeded without Finished=True",
+			age:  30 * time.Second,
+			conditions: []metav1.Condition{
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionReady),
+					Status: metav1.ConditionFalse,
 					Reason: sandboxv1beta1.SandboxReasonPodSucceeded,
 				},
 			},
@@ -3638,10 +3660,12 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 	for _, tc := range terminalCases {
 		t.Run(tc.name, func(t *testing.T) {
 			failedSb := createPoolSandbox(poolName, poolNamespace, poolNameHash, template, "-terminal")
+			failedSb.UID = "terminal-sandbox-uid"
 			failedSb.CreationTimestamp = metav1.Time{Time: time.Now().Add(-tc.age)}
 			failedSb.Status.Conditions = tc.conditions
 
 			healthySb := createPoolSandbox(poolName, poolNamespace, poolNameHash, template, "-healthy")
+			healthySb.UID = "healthy-sandbox-uid"
 			healthySb.CreationTimestamp = metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 			healthySb.Status.Conditions = []metav1.Condition{
 				{
@@ -3665,12 +3689,94 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 			require.True(t, k8serrors.IsNotFound(err), "terminal sandbox must be deleted immediately even within readinessGracePeriod")
 
 			// Second pass creates the replacement once deletion is observed.
+			syncPoolExpectations(&r, warmPool)
 			_, err = r.reconcilePool(ctx, warmPool)
 			require.NoError(t, err)
 
 			list := &sandboxv1beta1.SandboxList{}
 			require.NoError(t, r.List(ctx, list, &client.ListOptions{Namespace: poolNamespace}))
 			require.Len(t, list.Items, int(replicas))
+		})
+	}
+}
+
+func TestReconcilePool_RetainsInvalidConfigurationWithoutReplacement(t *testing.T) {
+	poolName := "test-pool"
+	poolNamespace := "default"
+	templateName := "test-template"
+	replicas := int32(1)
+
+	template := createTemplate(poolNamespace)
+	scheme := newTestScheme()
+	poolNameHash := sandboxcontrollers.NameHash(poolName)
+	warmPool := newTestPool(poolName, templateName, replicas)
+	testCases := []struct {
+		name       string
+		age        time.Duration
+		conditions []metav1.Condition
+	}{
+		{
+			name: "within grace period",
+			age:  30 * time.Second,
+			conditions: []metav1.Condition{{
+				Type:   string(sandboxv1beta1.SandboxConditionReady),
+				Status: metav1.ConditionFalse,
+				Reason: sandboxv1beta1.SandboxReasonInvalidConfiguration,
+			}},
+		},
+		{
+			name: "past grace period",
+			age:  10 * time.Minute,
+			conditions: []metav1.Condition{{
+				Type:   string(sandboxv1beta1.SandboxConditionReady),
+				Status: metav1.ConditionFalse,
+				Reason: sandboxv1beta1.SandboxReasonInvalidConfiguration,
+			}},
+		},
+		{
+			name: "Finished=True with invalid configuration",
+			age:  30 * time.Second,
+			conditions: []metav1.Condition{
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionReady),
+					Status: metav1.ConditionFalse,
+					Reason: sandboxv1beta1.SandboxReasonInvalidConfiguration,
+				},
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionFinished),
+					Status: metav1.ConditionTrue,
+					Reason: sandboxv1beta1.SandboxReasonPodFailed,
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			invalidSandbox := createPoolSandbox(poolName, poolNamespace, poolNameHash, template, "-invalid")
+			invalidSandbox.CreationTimestamp = metav1.Time{Time: time.Now().Add(-tc.age)}
+			invalidSandbox.Status.Conditions = tc.conditions
+			reconciler := &SandboxWarmPoolReconciler{
+				Client:       newFakeClient(scheme, template, invalidSandbox),
+				Scheme:       scheme,
+				MaxBatchSize: sandboxCreateDeleteMaxBatchSize,
+			}
+
+			_, err := reconciler.reconcilePool(context.Background(), warmPool)
+			require.NoError(t, err)
+			require.NoError(t, reconciler.Get(
+				context.Background(),
+				types.NamespacedName{Namespace: poolNamespace, Name: invalidSandbox.Name},
+				&sandboxv1beta1.Sandbox{},
+			))
+			list := &sandboxv1beta1.SandboxList{}
+			require.NoError(t, reconciler.List(
+				context.Background(),
+				list,
+				&client.ListOptions{Namespace: poolNamespace},
+			))
+			require.Len(t, list.Items, int(replicas),
+				"an invalid configuration must not create a replacement")
 		})
 	}
 }

@@ -2956,6 +2956,119 @@ func TestGetCandidateRequeuesUnnetworkedWarmPoolSandboxes(t *testing.T) {
 	require.Equal(t, key, requeued)
 }
 
+func TestGetCandidateSkipsTerminalWarmPoolSandboxes(t *testing.T) {
+	testCases := []struct {
+		name       string
+		conditions []metav1.Condition
+	}{
+		{
+			name: "pod failed",
+			conditions: []metav1.Condition{
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionReady),
+					Status: metav1.ConditionFalse,
+					Reason: sandboxv1beta1.SandboxReasonPodFailed,
+				},
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionFinished),
+					Status: metav1.ConditionTrue,
+					Reason: sandboxv1beta1.SandboxReasonPodFailed,
+				},
+			},
+		},
+		{
+			name: "pod succeeded",
+			conditions: []metav1.Condition{
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionReady),
+					Status: metav1.ConditionFalse,
+					Reason: sandboxv1beta1.SandboxReasonPodSucceeded,
+				},
+				{
+					Type:   string(sandboxv1beta1.SandboxConditionFinished),
+					Status: metav1.ConditionTrue,
+					Reason: sandboxv1beta1.SandboxReasonPodSucceeded,
+				},
+			},
+		},
+		{
+			name: "sandbox expired",
+			conditions: []metav1.Condition{{
+				Type:   string(sandboxv1beta1.SandboxConditionReady),
+				Status: metav1.ConditionFalse,
+				Reason: sandboxv1beta1.SandboxReasonExpired,
+			}},
+		},
+		{
+			name: "invalid configuration",
+			conditions: []metav1.Condition{{
+				Type:   string(sandboxv1beta1.SandboxConditionReady),
+				Status: metav1.ConditionFalse,
+				Reason: sandboxv1beta1.SandboxReasonInvalidConfiguration,
+			}},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			scheme := newScheme(t)
+			ctx := context.Background()
+			poolName := "test-pool"
+			warmPoolUID := types.UID("warmpool-uid-123")
+			candidateKey := queue.SandboxKey{Namespace: "default", Name: "terminal-sandbox", NodeName: "node-a"}
+			candidate := &sandboxv1beta1.Sandbox{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      candidateKey.Name,
+					Namespace: candidateKey.Namespace,
+					Labels: map[string]string{
+						warmPoolSandboxLabel:   sandboxcontrollers.NameHash(poolName),
+						sandboxTemplateRefHash: sandboxcontrollers.NameHash("test-template"),
+					},
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: extensionsv1beta1.GroupVersion.String(),
+						Kind:       extensionsv1beta1.SandboxWarmPoolKind,
+						Name:       poolName,
+						UID:        warmPoolUID,
+						Controller: ptr.To(true), // nolint:modernize
+					}},
+				},
+				Status: sandboxv1beta1.SandboxStatus{
+					Conditions: testCase.conditions,
+					PodIPs:     []string{"10.0.0.8"},
+				},
+			}
+			warmPool := &extensionsv1beta1.SandboxWarmPool{
+				ObjectMeta: metav1.ObjectMeta{Name: poolName, Namespace: candidateKey.Namespace, UID: warmPoolUID},
+				Spec: extensionsv1beta1.SandboxWarmPoolSpec{
+					TemplateRef: extensionsv1beta1.SandboxTemplateRef{Name: "test-template"},
+				},
+			}
+			claim := &extensionsv1beta1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-claim", Namespace: candidateKey.Namespace, UID: "claim-uid"},
+				Spec: extensionsv1beta1.SandboxClaimSpec{
+					WarmPoolRef: extensionsv1beta1.SandboxWarmPoolRef{Name: poolName},
+				},
+			}
+			warmSandboxQueue := queue.NewSimpleSandboxQueue()
+			namespacedWarmPoolName := queue.GetNamespacedWarmPoolName(candidateKey.Namespace, poolName)
+			warmSandboxQueue.Add(namespacedWarmPoolName, candidateKey)
+			reconciler := &SandboxClaimReconciler{
+				Client:           fake.NewClientBuilder().WithScheme(scheme).WithObjects(candidate, warmPool, claim).Build(),
+				Scheme:           scheme,
+				WarmSandboxQueue: warmSandboxQueue,
+				Tracer:           asmetrics.NewNoOp(),
+			}
+
+			got, _, pendingNetworkCandidates, err := reconciler.getCandidate(ctx, claim)
+			require.NoError(t, err)
+			require.Nil(t, got, "a terminal warm Sandbox must not be adopted")
+			require.Zero(t, pendingNetworkCandidates)
+			_, requeued := warmSandboxQueue.Get(namespacedWarmPoolName)
+			require.False(t, requeued, "a terminal candidate must not return to the adoption queue")
+		})
+	}
+}
+
 func newWarmCandidateGraceFixture(t *testing.T, claimCreated time.Time, withCandidate bool) (client.Client, *SandboxClaimReconciler, reconcile.Request, *sandboxv1beta1.Sandbox) {
 	t.Helper()
 	scheme := newScheme(t)
@@ -8599,6 +8712,229 @@ func TestSandboxClaimAssignedSandboxDeletedTerminalCleanup(t *testing.T) {
 			require.Equal(t, "pool-sb-2", afterPass2.Status.SandboxStatus.Name, "the converged pass re-adopts cleanly")
 		})
 	}
+}
+
+func TestSandboxClaimAssignedTerminalSandboxClearsReferenceAndReplaces(t *testing.T) {
+	scheme := newScheme(t)
+	_, template, warmPool, _ := newOptimisticLockTestObjects()
+
+	claim := &extensionsv1beta1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-claim",
+			Namespace: "default",
+			UID:       "claim-uid-123",
+			Annotations: map[string]string{
+				extensionsv1beta1.AssignedSandboxNameAnnotation: "terminal-sb",
+			},
+		},
+		Spec: extensionsv1beta1.SandboxClaimSpec{
+			WarmPoolRef: extensionsv1beta1.SandboxWarmPoolRef{Name: "test-pool"},
+		},
+	}
+	terminal := newPoolCandidateSandbox("terminal-sb")
+	meta.SetStatusCondition(&terminal.Status.Conditions, metav1.Condition{
+		Type:   string(sandboxv1beta1.SandboxConditionReady),
+		Status: metav1.ConditionFalse,
+		Reason: sandboxv1beta1.SandboxReasonPodFailed,
+	})
+	meta.SetStatusCondition(&terminal.Status.Conditions, metav1.Condition{
+		Type:   string(sandboxv1beta1.SandboxConditionFinished),
+		Status: metav1.ConditionTrue,
+		Reason: sandboxv1beta1.SandboxReasonPodFailed,
+	})
+	replacement := newPoolCandidateSandbox("replacement-sb")
+
+	rawClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(template, warmPool, claim, terminal, replacement).
+		WithStatusSubresource(claim).
+		Build()
+	warmSandboxQueue := queue.NewSimpleSandboxQueue()
+	warmSandboxQueue.Add(
+		queue.GetNamespacedWarmPoolName("default", "test-pool"),
+		queue.SandboxKey{Namespace: "default", Name: replacement.Name},
+	)
+	reconciler := &SandboxClaimReconciler{
+		Client:           rawClient,
+		APIReader:        rawClient,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		Tracer:           asmetrics.NewNoOp(),
+		WarmSandboxQueue: warmSandboxQueue,
+	}
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name, Namespace: claim.Namespace}}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	updatedClaim := &extensionsv1beta1.SandboxClaim{}
+	require.NoError(t, rawClient.Get(context.Background(), req.NamespacedName, updatedClaim))
+	require.Equal(t, replacement.Name, updatedClaim.Annotations[extensionsv1beta1.AssignedSandboxNameAnnotation])
+	require.Equal(t, replacement.Name, updatedClaim.Status.SandboxStatus.Name)
+
+	terminalAfter := &sandboxv1beta1.Sandbox{}
+	require.NoError(t, rawClient.Get(context.Background(), client.ObjectKeyFromObject(terminal), terminalAfter))
+	require.False(t, metav1.IsControlledBy(terminalAfter, updatedClaim),
+		"the terminal warm Sandbox must stay out of claim adoption")
+}
+
+func TestSandboxClaimRejectsCandidateThatTerminatesAfterAssignment(t *testing.T) {
+	scheme := newScheme(t)
+	_, template, warmPool, _ := newOptimisticLockTestObjects()
+
+	claim := &extensionsv1beta1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-claim",
+			Namespace: "default",
+			UID:       "claim-uid-123",
+		},
+		Spec: extensionsv1beta1.SandboxClaimSpec{
+			WarmPoolRef: extensionsv1beta1.SandboxWarmPoolRef{Name: "test-pool"},
+		},
+	}
+	candidate := newPoolCandidateSandbox("racing-sb")
+	replacement := newPoolCandidateSandbox("replacement-sb")
+	terminal := candidate.DeepCopy()
+	terminal.Status.Conditions = []metav1.Condition{{
+		Type:   string(sandboxv1beta1.SandboxConditionFinished),
+		Status: metav1.ConditionTrue,
+		Reason: sandboxv1beta1.SandboxReasonPodFailed,
+	}}
+
+	rawClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(template, warmPool, claim, candidate, replacement).
+		WithStatusSubresource(claim).
+		Build()
+	apiReader := interceptor.NewClient(rawClient, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if sb, ok := obj.(*sandboxv1beta1.Sandbox); ok && key.Name == candidate.Name {
+				terminal.DeepCopyInto(sb)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	warmSandboxQueue := queue.NewSimpleSandboxQueue()
+	poolKey := queue.GetNamespacedWarmPoolName("default", "test-pool")
+	warmSandboxQueue.Add(poolKey, queue.SandboxKey{Namespace: "default", Name: candidate.Name})
+	warmSandboxQueue.Add(poolKey, queue.SandboxKey{Namespace: "default", Name: replacement.Name})
+	reconciler := &SandboxClaimReconciler{
+		Client:           rawClient,
+		APIReader:        apiReader,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		Tracer:           asmetrics.NewNoOp(),
+		WarmSandboxQueue: warmSandboxQueue,
+	}
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name, Namespace: claim.Namespace}}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+
+	updatedClaim := &extensionsv1beta1.SandboxClaim{}
+	require.NoError(t, rawClient.Get(context.Background(), req.NamespacedName, updatedClaim))
+	require.Equal(t, replacement.Name, updatedClaim.Annotations[extensionsv1beta1.AssignedSandboxNameAnnotation])
+	require.Equal(t, replacement.Name, updatedClaim.Status.SandboxStatus.Name)
+
+	candidateAfter := &sandboxv1beta1.Sandbox{}
+	require.NoError(t, rawClient.Get(context.Background(), client.ObjectKeyFromObject(candidate), candidateAfter))
+	require.False(t, metav1.IsControlledBy(candidateAfter, updatedClaim),
+		"the candidate that became terminal after assignment must not be adopted")
+}
+
+func TestSandboxClaimClearsCandidateThatTerminatesBetweenCompletionRetries(t *testing.T) {
+	scheme := newScheme(t)
+	_, template, warmPool, _ := newOptimisticLockTestObjects()
+
+	claim := &extensionsv1beta1.SandboxClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-claim",
+			Namespace: "default",
+			UID:       "claim-uid-123",
+			Annotations: map[string]string{
+				extensionsv1beta1.AssignedSandboxNameAnnotation: "racing-sb",
+			},
+		},
+		Spec: extensionsv1beta1.SandboxClaimSpec{
+			WarmPoolRef: extensionsv1beta1.SandboxWarmPoolRef{Name: "test-pool"},
+		},
+	}
+	candidate := newPoolCandidateSandbox("racing-sb")
+	terminal := candidate.DeepCopy()
+	terminal.Status.Conditions = []metav1.Condition{{
+		Type:   string(sandboxv1beta1.SandboxConditionFinished),
+		Status: metav1.ConditionTrue,
+		Reason: sandboxv1beta1.SandboxReasonPodFailed,
+	}}
+	replacement := newPoolCandidateSandbox("replacement-sb")
+
+	rawClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(template, warmPool, claim, candidate, replacement).
+		WithStatusSubresource(claim).
+		Build()
+	candidateReads := 0
+	apiReader := interceptor.NewClient(rawClient, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if sb, ok := obj.(*sandboxv1beta1.Sandbox); ok && key.Name == candidate.Name {
+				candidateReads++
+				if candidateReads > 1 {
+					terminal.DeepCopyInto(sb)
+					return nil
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	conflict := k8errors.NewConflict(
+		schema.GroupResource{Group: "agents.x-k8s.io", Resource: "sandboxes"},
+		candidate.Name,
+		errors.New("the object has been modified; please apply your changes to the latest version and try again"),
+	)
+	cachedClient := interceptor.NewClient(rawClient, interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if sb, ok := obj.(*sandboxv1beta1.Sandbox); ok && sb.Name == candidate.Name {
+				return conflict
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+	warmSandboxQueue := queue.NewSimpleSandboxQueue()
+	warmSandboxQueue.Add(
+		queue.GetNamespacedWarmPoolName("default", "test-pool"),
+		queue.SandboxKey{Namespace: "default", Name: replacement.Name},
+	)
+	reconciler := &SandboxClaimReconciler{
+		Client:           cachedClient,
+		APIReader:        apiReader,
+		Scheme:           scheme,
+		Recorder:         events.NewFakeRecorder(10),
+		Tracer:           asmetrics.NewNoOp(),
+		WarmSandboxQueue: warmSandboxQueue,
+	}
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: claim.Name, Namespace: claim.Namespace}}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	require.ErrorIs(t, err, errAdoptionConflict)
+	require.Greater(t, candidateReads, 1, "the completion conflict must force an authoritative retry")
+
+	afterConflict := &extensionsv1beta1.SandboxClaim{}
+	require.NoError(t, rawClient.Get(context.Background(), req.NamespacedName, afterConflict))
+	require.NotContains(t, afterConflict.Annotations, extensionsv1beta1.AssignedSandboxNameAnnotation)
+	require.Empty(t, afterConflict.Status.SandboxStatus.Name)
+
+	_, err = reconciler.Reconcile(context.Background(), req)
+	require.NoError(t, err)
+	afterRetry := &extensionsv1beta1.SandboxClaim{}
+	require.NoError(t, rawClient.Get(context.Background(), req.NamespacedName, afterRetry))
+	require.Equal(t, replacement.Name, afterRetry.Annotations[extensionsv1beta1.AssignedSandboxNameAnnotation])
+	require.Equal(t, replacement.Name, afterRetry.Status.SandboxStatus.Name)
+
+	candidateAfter := &sandboxv1beta1.Sandbox{}
+	require.NoError(t, rawClient.Get(context.Background(), client.ObjectKeyFromObject(candidate), candidateAfter))
+	require.False(t, metav1.IsControlledBy(candidateAfter, afterRetry),
+		"the candidate that terminated between completion retries must not be adopted")
 }
 
 // TestSandboxClaimAdoptionCompletionExhaustedContentionKeepsReference covers

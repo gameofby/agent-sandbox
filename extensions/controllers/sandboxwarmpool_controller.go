@@ -533,8 +533,8 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 	for _, sb := range activeSandboxes {
 		if !isSandboxReady(&sb) && !sb.CreationTimestamp.IsZero() {
 			age := now.Sub(readinessGraceStart(&sb))
-			terminal := isSandboxTerminal(&sb)
-			if !terminal && age <= r.readinessGracePeriod() {
+			replacementEligible := isSandboxTerminalReplacementEligible(&sb)
+			if !replacementEligible && age <= r.readinessGracePeriod() {
 				// Not Ready but still within the grace period. In a quiet
 				// cluster nothing else touches the Sandbox objects of a pool
 				// that settles at Ready=False (pod FailedScheduling events do
@@ -556,7 +556,7 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 			// loop (#1215). Hold the sandbox and retry on a rate-limited
 			// requeue instead; the scheduler will place it when capacity
 			// frees up.
-			if !terminal && isSandboxPodUnschedulable(&sb) {
+			if !replacementEligible && isSandboxPodUnschedulable(&sb) {
 				unschedulableReplicas++
 				healthySandboxes = append(healthySandboxes, sb)
 				continue
@@ -564,18 +564,25 @@ func (r *SandboxWarmPoolReconciler) reconcilePool(ctx context.Context, warmPool 
 			// Likewise a gated Pod waits for the controller that owns its
 			// scheduling gates (e.g. Kueue admission) to remove them; a
 			// replacement would be gated again at the back of its queue.
-			if !terminal && isSandboxPodSchedulingGated(&sb) {
+			if !replacementEligible && isSandboxPodSchedulingGated(&sb) {
 				gatedReplicas++
 				healthySandboxes = append(healthySandboxes, sb)
 				continue
 			}
-			logger.Info("Deleting stuck warm pool sandbox",
+			// A replacement from the same invalid template fails validation in
+			// the same way. Hold the member until an operator corrects the
+			// configuration and replaces it.
+			if isSandboxInvalidConfiguration(&sb) {
+				healthySandboxes = append(healthySandboxes, sb)
+				continue
+			}
+			logger.Info("Deleting warm pool sandbox for replacement",
 				"sandbox", sb.Name,
 				"age", age.Round(time.Second))
 			r.exp().ExpectDeletion(poolKey, sb.UID)
 			if err := r.Delete(ctx, &sb); err != nil {
 				r.exp().DeletionObserved(poolKey, sb.UID)
-				logger.Error(err, "Failed to delete stuck sandbox", "sandbox", sb.Name)
+				logger.Error(err, "Failed to delete warm pool sandbox for replacement", "sandbox", sb.Name)
 				allErrors = errors.Join(allErrors, err)
 				// The sandbox still exists; keep counting it as active so the
 				// create path cannot overshoot spec.replicas.
@@ -960,14 +967,12 @@ func podNotScheduledReason(sb *sandboxv1beta1.Sandbox) string {
 	return cond.Reason
 }
 
-// isSandboxTerminal reports whether a pool member has reached a terminal state
-// and cannot become Ready. Terminal members bypass the readiness grace period
-// and are replaced immediately.
-//
-// SandboxReasonInvalidConfiguration is deliberately excluded: every replacement
-// stamped from the same pool name and SandboxTemplate would hit the same
-// apiserver validation error and hot-loop on delete/create.
+// isSandboxTerminal reports whether a Sandbox can never become Ready without
+// user or controller intervention.
 func isSandboxTerminal(sb *sandboxv1beta1.Sandbox) bool {
+	if isSandboxInvalidConfiguration(sb) {
+		return true
+	}
 	if meta.IsStatusConditionTrue(sb.Status.Conditions, string(sandboxv1beta1.SandboxConditionFinished)) {
 		return true
 	}
@@ -980,6 +985,29 @@ func isSandboxTerminal(sb *sandboxv1beta1.Sandbox) bool {
 		}
 	}
 	return false
+}
+
+// isSandboxInvalidConfiguration reports whether the Sandbox reports an
+// immutable configuration error.
+func isSandboxInvalidConfiguration(sb *sandboxv1beta1.Sandbox) bool {
+	ready := meta.FindStatusCondition(sb.Status.Conditions, string(sandboxv1beta1.SandboxConditionReady))
+	return ready != nil &&
+		ready.Status == metav1.ConditionFalse &&
+		ready.Reason == sandboxv1beta1.SandboxReasonInvalidConfiguration
+}
+
+// isSandboxTerminalReplacementEligible reports whether the pool should replace
+// a terminal Sandbox without waiting for the readiness grace period.
+//
+// SandboxReasonInvalidConfiguration does not make a Sandbox replacement
+// eligible. Every replacement stamped from the same pool name and
+// SandboxTemplate would hit the same apiserver validation error and hot-loop
+// on delete and create.
+func isSandboxTerminalReplacementEligible(sb *sandboxv1beta1.Sandbox) bool {
+	if isSandboxInvalidConfiguration(sb) {
+		return false
+	}
+	return isSandboxTerminal(sb)
 }
 
 // resolveUpdateStrategy returns the effective update strategy for the warm pool,
