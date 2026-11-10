@@ -335,9 +335,8 @@ func (m *lifecycleTimeMap) markError(key types.NamespacedName, uid types.UID) bo
 type SandboxReconciler struct {
 	client.Client
 	// APIReader reads directly from the API server, bypassing the informer
-	// cache. Used only to confirm that a Sandbox still exists and is not being
-	// deleted before it adopts an unowned child. Falls back to Client when
-	// unset (e.g. in unit tests with a fake client).
+	// cache. The reconciler requires it to confirm that a Sandbox still exists
+	// and is not being deleted before it adopts an unowned child.
 	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	Recorder      events.EventRecorder
