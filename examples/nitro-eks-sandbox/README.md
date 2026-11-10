@@ -90,10 +90,8 @@ vscode-nitro   True    DependenciesReady   25s
 Compare the kernel inside the sandbox with the kernel of the node it runs on:
 
 ```shell
-# Kernel inside the sandbox (the Nitro Sandbox's own kernel)
 kubectl exec vscode-nitro -- uname -r
 
-# Kernel on the node hosting the sandbox
 SANDBOX_NODE="$(kubectl get pod vscode-nitro -o jsonpath='{.spec.nodeName}')"
 kubectl get node "${SANDBOX_NODE}" -o jsonpath='{.status.nodeInfo.kernelVersion}'
 ```
@@ -106,10 +104,8 @@ kubectl get node "${SANDBOX_NODE}" -o jsonpath='{.status.nodeInfo.kernelVersion}
 The two versions differ, so the sandbox boots its own kernel. Run these commands to compare its uptime with the node and to read the VM product name:
 
 ```shell
-# Uptime inside the sandbox
 kubectl exec vscode-nitro -- cat /proc/uptime
 
-# Uptime of the node that hosts the sandbox
 kubectl debug node/"${SANDBOX_NODE}" \
   --image=busybox:1.36 \
   --profile=sysadmin \
