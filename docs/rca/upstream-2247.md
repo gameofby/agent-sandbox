@@ -155,7 +155,7 @@ The claim test covers fallback candidates with cached Pod IPs for:
 The following focused checks pass with Go 1.27.3:
 
 - `git diff --check`
-- `test -z "$(gofmt -l extensions/controllers/sandboxclaim_controller.go extensions/controllers/sandboxclaim_controller_test.go extensions/controllers/sandboxwarmpool_controller.go extensions/controllers/sandboxwarmpool_controller_test.go)"`
+- `unformatted="$(gofmt -l extensions/controllers/sandboxclaim_controller.go extensions/controllers/sandboxclaim_controller_test.go extensions/controllers/sandboxwarmpool_controller.go extensions/controllers/sandboxwarmpool_controller_test.go)" && test -z "$unformatted"`
 - `go test ./extensions/controllers -count=1`
 - `go test -race ./extensions/controllers -count=1`
 - `go test ./cmd/agent-sandbox-controller -count=1`
