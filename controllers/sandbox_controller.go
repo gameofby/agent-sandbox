@@ -140,42 +140,64 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 	return resourceOwnedByOther, controllerRef
 }
 
-// sandboxAdoptionRefusalReason returns why the live Sandbox cannot adopt an
-// unowned child. An empty reason means the controller may adopt the child.
+type sandboxAdoptionDecision string
+
+const (
+	sandboxAdoptionAllowed   sandboxAdoptionDecision = ""
+	sandboxAdoptionMissing   sandboxAdoptionDecision = "missing"
+	sandboxAdoptionRecreated sandboxAdoptionDecision = "recreated"
+	sandboxAdoptionDeleting  sandboxAdoptionDecision = "deleting"
+)
+
+func (d sandboxAdoptionDecision) refusalReason() string {
+	switch d {
+	case sandboxAdoptionMissing:
+		return "Sandbox no longer exists"
+	case sandboxAdoptionRecreated:
+		return "Sandbox was recreated with a different UID"
+	case sandboxAdoptionDeleting:
+		return "Sandbox is being deleted"
+	default:
+		return ""
+	}
+}
+
+// sandboxAdoptionDecision returns whether the live Sandbox can adopt an
+// unowned child.
 // The informer cache can show an unowned child before it shows the Sandbox
 // deletion. The API server records the deletion before the garbage collector
 // orphans children. The controller therefore reads the Sandbox from the API
 // server, where the deletion is visible.
-func (r *SandboxReconciler) sandboxAdoptionRefusalReason(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (string, error) {
+func (r *SandboxReconciler) sandboxAdoptionDecision(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (sandboxAdoptionDecision, error) {
 	if r.APIReader == nil {
-		return "", fmt.Errorf("APIReader is required before adopting an unowned child")
+		return sandboxAdoptionAllowed, fmt.Errorf("APIReader is required before adopting an unowned child")
 	}
 	live := &sandboxv1beta1.Sandbox{}
 	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(sandbox), live); err != nil {
 		if k8serrors.IsNotFound(err) {
-			return "Sandbox no longer exists", nil
+			return sandboxAdoptionMissing, nil
 		}
-		return "", fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
+		return sandboxAdoptionAllowed, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
 	}
 	if live.UID != sandbox.UID {
-		return "Sandbox was recreated with a different UID", nil
+		return sandboxAdoptionRecreated, nil
 	}
 	if !live.DeletionTimestamp.IsZero() {
-		return "Sandbox is being deleted", nil
+		return sandboxAdoptionDeleting, nil
 	}
-	return "", nil
+	return sandboxAdoptionAllowed, nil
 }
 
 func (r *SandboxReconciler) canAdoptUnownedChild(ctx context.Context, sandbox *sandboxv1beta1.Sandbox, kind, name string) (bool, error) {
-	reason, err := r.sandboxAdoptionRefusalReason(ctx, sandbox)
+	decision, err := r.sandboxAdoptionDecision(ctx, sandbox)
 	if err != nil {
 		return false, err
 	}
-	if reason == "" {
+	if decision == sandboxAdoptionAllowed {
 		return true, nil
 	}
 	log.FromContext(ctx).V(4).Info("Refusing to adopt unowned resource",
-		"Kind", kind, "Name", name, "Sandbox.Name", sandbox.Name, "Reason", reason)
+		"Kind", kind, "Name", name, "Sandbox.Name", sandbox.Name, "Reason", decision.refusalReason())
 	return false, nil
 }
 

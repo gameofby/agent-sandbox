@@ -6090,7 +6090,7 @@ func TestReconcileSkipsAdoptionWhenCachedSandboxIsStale(t *testing.T) {
 	}
 }
 
-func TestSandboxAdoptionRefusalReason(t *testing.T) {
+func TestSandboxAdoptionDecision(t *testing.T) {
 	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
 		Name:      "test-sandbox",
 		Namespace: "test-ns",
@@ -6105,12 +6105,13 @@ func TestSandboxAdoptionRefusalReason(t *testing.T) {
 	testCases := []struct {
 		name       string
 		apiSandbox *sandboxv1beta1.Sandbox
-		want       string
+		want       sandboxAdoptionDecision
+		wantReason string
 	}{
-		{name: "allowed", apiSandbox: sandbox},
-		{name: "being deleted", apiSandbox: deletingSandbox, want: "Sandbox is being deleted"},
-		{name: "missing", want: "Sandbox no longer exists"},
-		{name: "recreated with a different UID", apiSandbox: recreatedSandbox, want: "Sandbox was recreated with a different UID"},
+		{name: "allowed", apiSandbox: sandbox, want: sandboxAdoptionAllowed},
+		{name: "being deleted", apiSandbox: deletingSandbox, want: sandboxAdoptionDeleting, wantReason: "Sandbox is being deleted"},
+		{name: "missing", want: sandboxAdoptionMissing, wantReason: "Sandbox no longer exists"},
+		{name: "recreated with a different UID", apiSandbox: recreatedSandbox, want: sandboxAdoptionRecreated, wantReason: "Sandbox was recreated with a different UID"},
 	}
 
 	for _, tc := range testCases {
@@ -6120,14 +6121,15 @@ func TestSandboxAdoptionRefusalReason(t *testing.T) {
 				apiObjs = append(apiObjs, tc.apiSandbox)
 			}
 			r := SandboxReconciler{APIReader: newFakeClient(apiObjs...)}
-			got, err := r.sandboxAdoptionRefusalReason(t.Context(), sandbox)
+			got, err := r.sandboxAdoptionDecision(t.Context(), sandbox)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.wantReason, got.refusalReason())
 		})
 	}
 }
 
-func TestSandboxAdoptionRefusalReasonReturnsErrorOnReadError(t *testing.T) {
+func TestSandboxAdoptionDecisionReturnsErrorOnReadError(t *testing.T) {
 	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
 		Name:      "test-sandbox",
 		Namespace: "test-ns",
@@ -6139,12 +6141,12 @@ func TestSandboxAdoptionRefusalReasonReturnsErrorOnReadError(t *testing.T) {
 		},
 	})}
 
-	got, err := r.sandboxAdoptionRefusalReason(t.Context(), sandbox)
+	got, err := r.sandboxAdoptionDecision(t.Context(), sandbox)
 	require.Error(t, err)
-	assert.Empty(t, got)
+	assert.Equal(t, sandboxAdoptionAllowed, got)
 }
 
-func TestSandboxAdoptionRefusalReasonRequiresAPIReader(t *testing.T) {
+func TestSandboxAdoptionDecisionRequiresAPIReader(t *testing.T) {
 	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
 		Name:      "test-sandbox",
 		Namespace: "test-ns",
@@ -6152,9 +6154,9 @@ func TestSandboxAdoptionRefusalReasonRequiresAPIReader(t *testing.T) {
 	}}
 	r := SandboxReconciler{}
 
-	got, err := r.sandboxAdoptionRefusalReason(t.Context(), sandbox)
+	got, err := r.sandboxAdoptionDecision(t.Context(), sandbox)
 	require.EqualError(t, err, "APIReader is required before adopting an unowned child")
-	assert.Empty(t, got)
+	assert.Equal(t, sandboxAdoptionAllowed, got)
 }
 
 func TestReconcilePVCsReturnsErrorWhenSandboxReadFails(t *testing.T) {

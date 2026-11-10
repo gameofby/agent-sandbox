@@ -18,10 +18,12 @@ The Sandbox controller cache lags behind the Kubernetes API server. When orphan 
 The controller resolves this race before it adopts an unowned child:
 - The controller uses an uncached direct API reader before adopting unowned PVCs, Pods, or Services.
 - The reconciler requires an API reader. It does not fall back to the cache.
-- Helper `sandboxAdoptionRefusalReason` verifies the current Sandbox object directly from the API server.
+- Helper `sandboxAdoptionDecision` verifies the current Sandbox object directly from the API server.
 - Helper `canAdoptUnownedChild` centralizes the adoption gate and refusal log for all three resource types.
 - The reconciler adopts a child only when the live Sandbox has the same UID
   and no deletion timestamp.
+- The helper returns a typed decision. A separate method supplies log text for
+  each refusal state.
 - The controller logs why adoption is blocked when the Sandbox is deleting,
   absent, or recreated with a different UID. It returns an error when the API
   reader is missing or the read fails.
