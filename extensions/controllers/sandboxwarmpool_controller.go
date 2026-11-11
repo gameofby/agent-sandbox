@@ -62,10 +62,12 @@ const (
 	// of O(sandboxes-in-namespace).
 	sandboxWarmPoolLabelIndex = ".metadata.labels[" + warmPoolSandboxLabel + "]"
 
-	// DefaultWarmPoolReadinessGracePeriod is how long a pool sandbox may stay
-	// non-Ready, counted from when its Pod is scheduled (or from creation if it
-	// has not been), before the reconciler considers it stuck and replaces it,
-	// unless overridden via SandboxWarmPoolReconciler.ReadinessGracePeriod.
+	// DefaultWarmPoolReadinessGracePeriod is how long a non-terminal pool
+	// sandbox may stay non-Ready, counted from when its Pod is scheduled (or
+	// from creation if it has not been), before the reconciler considers it
+	// stuck and replaces it, unless overridden via
+	// SandboxWarmPoolReconciler.ReadinessGracePeriod. The controller replaces a
+	// terminal sandbox immediately.
 	DefaultWarmPoolReadinessGracePeriod = 5 * time.Minute
 
 	// expectationsPendingRequeueDelay is the fallback requeue used when create
@@ -116,10 +118,11 @@ type SandboxWarmPoolReconciler struct {
 	Scheme                 *runtime.Scheme
 	MaxBatchSize           int
 	EnableWarmPoolEviction bool
-	// ReadinessGracePeriod is how long a pool sandbox may stay non-Ready,
-	// counted from when its Pod is scheduled (or from creation if it has not
-	// been), before it is considered stuck (delete-and-replace, or held if its
-	// pod is unschedulable or scheduling-gated). Zero means
+	// ReadinessGracePeriod is how long a non-terminal pool sandbox may stay
+	// non-Ready, counted from when its Pod is scheduled (or from creation if it
+	// has not been), before it is considered stuck (delete-and-replace, or held
+	// if its pod is unschedulable or scheduling-gated). The controller replaces
+	// a terminal sandbox immediately. Zero means
 	// DefaultWarmPoolReadinessGracePeriod.
 	ReadinessGracePeriod time.Duration
 	// UnschedulableRecheckInterval is the requeue interval while a pool holds

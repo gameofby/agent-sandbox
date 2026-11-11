@@ -121,6 +121,10 @@ valid members that are still starting.
 Review validated the pool replacement and claim-adoption paths. The resolved
 risks are:
 
+- The readiness grace flag, field, and configuration documentation described
+  a policy that excluded terminal members. The corrected descriptions now say
+  that the grace applies to non-terminal members and that terminal members are
+  replaced immediately.
 - `Finished=True` must not mask `InvalidConfiguration` and restart a
   delete/create loop.
 - A recorded assignment must not complete after its Sandbox becomes terminal.
