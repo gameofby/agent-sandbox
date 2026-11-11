@@ -585,10 +585,27 @@ timeout. When the router is not in `allow-all` mode, set `router_auth_token`.
 The SDK sends that token as `Authorization` on REST requests and gRPC calls.
 Use a Kubernetes bearer token for `tokenreview`, or a v1 or
 [sandbox-scoped v2](https://github.com/kubernetes-sigs/agent-sandbox/blob/main/sandbox-router/README.md#scoped-token-authorizer)
-token for `scoped-token`. Mint a scoped token after its claim binds, then attach
-with `get_sandbox(claim_name)`. The router strips `Authorization`, so the SDK
-sends `auth_token` in `X-Sandboxd-Token` instead. sandboxd accepts that header
-since [#2164](https://github.com/kubernetes-sigs/agent-sandbox/pull/2164).
+token for `scoped-token`. Mint a sandbox-scoped v2 token after the
+`SandboxClaim` binds to a Sandbox UID. Put that token in `router_auth_token`,
+then attach with `get_sandbox()`:
+
+```python
+from k8s_agent_sandbox import SandboxClient, SandboxdRouterTunnelConnectionConfig
+
+claim_name = "my-sandbox"
+scoped_token = "<minted sandbox-scoped-v2 token>"
+config = SandboxdRouterTunnelConnectionConfig(
+    router_namespace="agent-sandbox-system",
+    router_auth_token=scoped_token,
+)
+with SandboxClient(connection_config=config) as client:
+    sandbox = client.get_sandbox(claim_name, namespace="default")
+    print(sandbox.files.read("out/report.csv"))
+```
+
+The router strips `Authorization`, so the SDK sends `auth_token` in
+`X-Sandboxd-Token` instead. sandboxd accepts that header since
+[#2164](https://github.com/kubernetes-sigs/agent-sandbox/pull/2164).
 
 ### 10. Labels and Pod Metadata
 

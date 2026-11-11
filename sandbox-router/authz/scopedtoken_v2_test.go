@@ -257,7 +257,9 @@ func TestScopedTokenV2_SandboxScopeAuthorizesEveryTarget(t *testing.T) {
 		{name: "gRPC Execute", mutate: func(t *AuthorizationTarget) {
 			t.Port, t.Method, t.Path = 9090, "POST", "/process.v1.ProcessService/Execute"
 		}},
-		{name: "other Sandbox UID", mutate: func(t *AuthorizationTarget) { t.SandboxUID = "replacement-uid" }, want: ErrForbidden},
+		{name: "other Sandbox namespace", mutate: func(t *AuthorizationTarget) { t.Namespace = "team-b" }, want: ErrForbidden},
+		{name: "other Sandbox name", mutate: func(t *AuthorizationTarget) { t.SandboxName = "box-b" }, want: ErrForbidden},
+		{name: "recreated Sandbox UID", mutate: func(t *AuthorizationTarget) { t.SandboxUID = "replacement-uid" }, want: ErrForbidden},
 		{name: "Pod IP header", mutate: func(*AuthorizationTarget) {}, podIP: true, want: ErrForbidden},
 	}
 	for _, test := range tests {
@@ -339,6 +341,23 @@ func TestMintScopedTokenV2Sandbox_RequiresFields(t *testing.T) {
 				t.Fatal("expected mint to fail")
 			}
 		})
+	}
+}
+
+func TestMintScopedTokenV2Sandbox_LeavesExactTargetFieldsUnset(t *testing.T) {
+	_, privateKey := newScopedTokenV2Key(t)
+	token, err := MintScopedTokenV2Sandbox(privateKey, "current", "team-a", "box-a", "uid-a", time.Minute)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	claims := decodeScopedTokenV2Claims(t, token)
+	if claims.Scope != scopedTokenV2ScopeSandbox {
+		t.Fatalf("scope = %q, want %q", claims.Scope, scopedTokenV2ScopeSandbox)
+	}
+	if claims.Port != 0 || claims.Method != "" || claims.Path != "" {
+		t.Fatalf("sandbox token must leave exact target fields unset: port=%d method=%q path=%q",
+			claims.Port, claims.Method, claims.Path)
 	}
 }
 
