@@ -3659,10 +3659,10 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 
 	for _, tc := range terminalCases {
 		t.Run(tc.name, func(t *testing.T) {
-			failedSb := createPoolSandbox(poolName, poolNamespace, poolNameHash, template, "-terminal")
-			failedSb.UID = "terminal-sandbox-uid"
-			failedSb.CreationTimestamp = metav1.Time{Time: time.Now().Add(-tc.age)}
-			failedSb.Status.Conditions = tc.conditions
+			terminalSb := createPoolSandbox(poolName, poolNamespace, poolNameHash, template, "-terminal")
+			terminalSb.UID = "terminal-sandbox-uid"
+			terminalSb.CreationTimestamp = metav1.Time{Time: time.Now().Add(-tc.age)}
+			terminalSb.Status.Conditions = tc.conditions
 
 			healthySb := createPoolSandbox(poolName, poolNamespace, poolNameHash, template, "-healthy")
 			healthySb.UID = "healthy-sandbox-uid"
@@ -3675,7 +3675,7 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 			}
 
 			r := SandboxWarmPoolReconciler{
-				Client:       newFakeClient(scheme, template, failedSb, healthySb),
+				Client:       newFakeClient(scheme, template, terminalSb, healthySb),
 				Scheme:       scheme,
 				MaxBatchSize: sandboxCreateDeleteMaxBatchSize,
 			}
@@ -3685,7 +3685,7 @@ func TestReconcilePool_DeletesTerminalSandboxWithinGracePeriod(t *testing.T) {
 			require.NoError(t, err)
 			require.Zero(t, requeue, "terminal sandbox should be deleted immediately without scheduling a post-grace requeue")
 
-			err = r.Get(ctx, types.NamespacedName{Namespace: poolNamespace, Name: failedSb.Name}, &sandboxv1beta1.Sandbox{})
+			err = r.Get(ctx, types.NamespacedName{Namespace: poolNamespace, Name: terminalSb.Name}, &sandboxv1beta1.Sandbox{})
 			require.True(t, k8serrors.IsNotFound(err), "terminal sandbox must be deleted immediately even within readinessGracePeriod")
 
 			// Second pass creates the replacement once deletion is observed.

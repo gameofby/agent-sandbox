@@ -103,15 +103,22 @@ and replace the retained member instead of relying on a delete/create retry.
 ## Compatibility and migration
 
 This change flags a breaking runtime behavior change. A default pool now
-replaces a terminal Sandbox immediately instead of waiting for the readiness
-grace period. A default claim now rejects a terminal warm Sandbox instead of
-using it as fallback capacity. An `InvalidConfiguration` member remains in the
-pool instead of entering the post-grace delete and create loop.
+replaces a Sandbox immediately when it reports `PodFailed`, `PodSucceeded`, or
+`SandboxExpired`, instead of waiting for the readiness grace period. It retains
+an `InvalidConfiguration` member instead of entering the post-grace
+delete-and-create loop. A default claim now rejects a terminal warm Sandbox
+instead of using it as fallback capacity.
 
 The change does not modify an API type, CRD, generated client, stored object,
-or user-managed specification. It requires no data migration. The normal
-controller rollout applies the behavior, and a rollback restores the previous
-runtime behavior without reversing a storage change.
+or user-managed specification. It requires no data migration. The upstream
+issue and PR review document the behavior change before a release. Before the
+upgrade, operators must audit warm-pool templates that intentionally exit
+terminally. Operators can set `--sandbox-warm-pool-replenish-delay` or
+`--sandbox-warm-pool-max-refill-rate` to pace replacement for intentional
+churn. They can observe the warm-pool status and events during the rollout. A
+controller rollback restores the previous runtime behavior without reversing a
+storage change. A separate KEP is not required because no API field, stored
+value, or generated surface changes.
 
 Claims still adopt ready members and retain the existing fallback behavior for
 valid members that are still starting.
@@ -123,13 +130,20 @@ risks are:
 
 - The readiness grace flag, field, and configuration documentation described
   a policy that excluded terminal members. The corrected descriptions now say
-  that the grace applies to non-terminal members and that terminal members are
-  replaced immediately.
+  that the grace applies to non-terminal members. They name the
+  `PodFailed`, `PodSucceeded`, and `SandboxExpired` conditions that trigger an
+  immediate replacement. They also state that an `InvalidConfiguration`
+  member remains retained.
 - `Finished=True` must not mask `InvalidConfiguration` and restart a
   delete/create loop.
 - A recorded assignment must not complete after its Sandbox becomes terminal.
 - A completion conflict must re-read the Sandbox before retrying, so a
   terminal state observed between attempts clears the assignment.
+- An independent review suggested a default per-pool backoff for valid
+  terminal members that exit quickly. The branch does not add that backoff.
+  The PR contract requires immediate replacement. Operators can set
+  `--sandbox-warm-pool-replenish-delay` or
+  `--sandbox-warm-pool-max-refill-rate` to pace refill for intentional churn.
 
 ## Regression coverage
 
