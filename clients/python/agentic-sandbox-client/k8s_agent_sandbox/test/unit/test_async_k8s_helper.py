@@ -28,7 +28,7 @@ import certifi
 from kubernetes_asyncio import client
 from kubernetes_asyncio.config import incluster_config
 
-from k8s_agent_sandbox.models import AdditionalPodMetadata
+from k8s_agent_sandbox.models import AdditionalPodMetadata, SandboxClaimLifecycle
 from k8s_agent_sandbox.async_k8s_helper import AsyncK8sHelper
 from k8s_agent_sandbox.exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxNotFoundError, SandboxTemplateNotFoundError
 from k8s_agent_sandbox.constants import CLIENT_REQUEST_TIME_ANNOTATION
@@ -62,17 +62,20 @@ class TestAsyncK8sHelperCreateSandboxClaim(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_lifecycle_included_in_manifest(self):
-        lifecycle = {
-            "shutdownTime": "2026-12-31T23:59:59Z",
-            "shutdownPolicy": "Delete",
-        }
+        lifecycle = SandboxClaimLifecycle(
+            shutdown_time="2026-12-31T23:59:59Z",
+            shutdown_policy="Delete",
+        )
         await self.helper.create_sandbox_claim(
             "test-claim", "test-warmpool", "test-namespace", lifecycle=lifecycle
         )
 
         call_kwargs = self.helper.custom_objects_api.create_namespaced_custom_object.call_args.kwargs
         body = call_kwargs["body"]
-        self.assertEqual(body["spec"]["lifecycle"], lifecycle)
+        self.assertEqual(
+            body["spec"]["lifecycle"],
+            {"shutdownTime": "2026-12-31T23:59:59Z", "shutdownPolicy": "Delete"},
+        )
         self.assertEqual(body["spec"]["warmPoolRef"]["name"], "test-warmpool")
 
     async def test_no_lifecycle_omits_key(self):
@@ -86,10 +89,10 @@ class TestAsyncK8sHelperCreateSandboxClaim(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["metadata"]["labels"], {"agents.x-k8s.io/created-by": "python-client"})
 
     async def test_lifecycle_with_labels_and_annotations(self):
-        lifecycle = {
-            "shutdownTime": "2026-06-15T12:00:00Z",
-            "shutdownPolicy": "Delete",
-        }
+        lifecycle = SandboxClaimLifecycle(
+            shutdown_time="2026-06-15T12:00:00Z",
+            shutdown_policy="Delete",
+        )
         await self.helper.create_sandbox_claim(
             "test-claim", "test-warmpool", "test-namespace",
             annotations={"key": "val"},
@@ -99,7 +102,10 @@ class TestAsyncK8sHelperCreateSandboxClaim(unittest.IsolatedAsyncioTestCase):
 
         call_kwargs = self.helper.custom_objects_api.create_namespaced_custom_object.call_args.kwargs
         body = call_kwargs["body"]
-        self.assertEqual(body["spec"]["lifecycle"], lifecycle)
+        self.assertEqual(
+            body["spec"]["lifecycle"],
+            {"shutdownTime": "2026-06-15T12:00:00Z", "shutdownPolicy": "Delete"},
+        )
         self.assertEqual(body["metadata"]["labels"], {"agent": "test", "agents.x-k8s.io/created-by": "python-client"})
         self.assertEqual(body["metadata"]["annotations"]["key"], "val")
         self.assertIn(CLIENT_REQUEST_TIME_ANNOTATION, body["metadata"]["annotations"])

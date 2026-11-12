@@ -22,7 +22,7 @@ import atexit
 import functools
 import logging
 from types import TracebackType
-from typing import Any, Dict, Generic, List, Literal, Self, Tuple, Type, TypeVar
+from typing import Any, Dict, Generic, List, Self, Tuple, Type, TypeVar
 
 from kubernetes import client
 from kubernetes.client import ApiException
@@ -36,6 +36,9 @@ from .trace_manager import (
 from .sandbox import Sandbox
 from .models import (
     AdditionalPodMetadata,
+    SandboxClaimLifecycle,
+    SandboxClaimLifecycleConfig,
+    SandboxClaimShutdownPolicy,
     SandboxConnectionConfig,
     SandboxFileConfig,
     SandboxLocalTunnelConnectionConfig,
@@ -43,7 +46,7 @@ from .models import (
 )
 from .k8s_helper import K8sHelper
 from .pod_metadata import build_pod_metadata, validate_labels
-from .utils import construct_sandbox_claim_lifecycle_spec
+from .utils import construct_sandbox_claim_lifecycle_model
 from .exceptions import SandboxMetadataError, SandboxNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -133,7 +136,7 @@ class SandboxClient(Generic[T]):
         claim_name: str | None = None,
         adopt_existing: bool = False,
         shutdown_after_seconds: int | None = None,
-        shutdown_policy: Literal["Delete", "DeleteForeground", "Retain"] | None = None,
+        shutdown_policy: SandboxClaimShutdownPolicy | None = None,
         ttl_seconds_after_finished: int | None = None,
         volume_claim_templates: list[dict[str, Any]] | None = None,
         pod_labels: dict[str, str] | None = None,
@@ -153,12 +156,13 @@ class SandboxClient(Generic[T]):
                 caller-owned and are excluded from automatic cleanup.
             adopt_existing: On AlreadyExists, attach to the existing named Claim after
                 checking its warm pool and that it is not terminating. Requires
-                claim_name. Creation options are not reapplied on adoption;
-                the existing lifecycle is preserved.
+                claim_name. The SDK does not reapply creation options during
+                adoption. The SDK preserves the existing lifecycle.
             shutdown_after_seconds: Optional TTL in seconds. When set, the
-                claim's ``spec.lifecycle`` is populated with a ``shutdownTime``
-                of *now + shutdown_after_seconds* (UTC) and a ``shutdownPolicy``
-                of ``"Delete"`` unless shutdown_policy is given.
+                SDK populates the claim's ``spec.lifecycle`` with a
+                ``shutdownTime`` of *now + shutdown_after_seconds* (UTC) and a
+                ``shutdownPolicy`` of ``"Delete"`` unless shutdown_policy is
+                given.
                 Must be a positive integer.
             shutdown_policy: Value for ``spec.lifecycle.shutdownPolicy``.
                 When a timer is set and no policy is given, the SDK sends Delete;
@@ -198,10 +202,12 @@ class SandboxClient(Generic[T]):
 
         pod_metadata = build_pod_metadata(pod_labels, pod_annotations)
 
-        lifecycle = construct_sandbox_claim_lifecycle_spec(
-            shutdown_after_seconds, shutdown_policy=shutdown_policy,
+        lifecycle_config = SandboxClaimLifecycleConfig(
+            shutdown_after_seconds=shutdown_after_seconds,
+            shutdown_policy=shutdown_policy,
             ttl_seconds_after_finished=ttl_seconds_after_finished,
-        ) or None
+        )
+        lifecycle = construct_sandbox_claim_lifecycle_model(lifecycle_config)
 
         generated_name = claim_name is None
         if adopt_existing and generated_name:
@@ -484,7 +490,7 @@ class SandboxClient(Generic[T]):
         warmpool_name: str,
         namespace: str,
         labels: dict[str, str] | None = None,
-        lifecycle: dict[str, Any] | None = None,
+        lifecycle: SandboxClaimLifecycle | None = None,
         volume_claim_templates: list[dict[str, Any]] | None = None,
         pod_metadata: AdditionalPodMetadata | None = None,
         env: dict[str, str] | None = None,
@@ -494,9 +500,10 @@ class SandboxClient(Generic[T]):
         if span.is_recording():
             span.set_attribute("sandbox.claim.name", claim_name)
             if lifecycle:
-                if "shutdownTime" in lifecycle:
-                    span.set_attribute("sandbox.lifecycle.shutdown_time", lifecycle["shutdownTime"])
-                span.set_attribute("sandbox.lifecycle.shutdown_policy", lifecycle["shutdownPolicy"])
+                if lifecycle.shutdown_time is not None:
+                    span.set_attribute("sandbox.lifecycle.shutdown_time", lifecycle.shutdown_time)
+                if lifecycle.shutdown_policy is not None:
+                    span.set_attribute("sandbox.lifecycle.shutdown_policy", lifecycle.shutdown_policy)
 
         annotations = {}
         if self.tracing_manager:

@@ -67,8 +67,7 @@ def create_sandbox(warmpool: str,
                    claim_name: str | None = None,
                    adopt_existing: bool = False,
                    shutdown_after_seconds: int | None = None,
-                   shutdown_policy: Literal["Delete", "DeleteForeground",
-                                            "Retain"] | None = None,
+                   shutdown_policy: SandboxClaimShutdownPolicy | None = None,
                    ttl_seconds_after_finished: int | None = None,
                    volume_claim_templates: list[dict[str, Any]] | None = None,
                    pod_labels: dict[str, str] | None = None,
@@ -90,12 +89,13 @@ the underlying infrastructure.
   caller-owned and are excluded from automatic cleanup.
 - `adopt_existing` - On AlreadyExists, attach to the existing named Claim after
   checking its warm pool and that it is not terminating. Requires
-  claim_name. Creation options are not reapplied on adoption;
-  the existing lifecycle is preserved.
+  claim_name. The SDK does not reapply creation options during
+  adoption. The SDK preserves the existing lifecycle.
 - `shutdown_after_seconds` - Optional TTL in seconds. When set, the
-  claim's ``spec.lifecycle`` is populated with a ``shutdownTime``
-  of *now + shutdown_after_seconds* (UTC) and a ``shutdownPolicy``
-  of ``"Delete"`` unless shutdown_policy is given.
+  SDK populates the claim's ``spec.lifecycle`` with a
+  ``shutdownTime`` of *now + shutdown_after_seconds* (UTC) and a
+  ``shutdownPolicy`` of ``"Delete"`` unless shutdown_policy is
+  given.
   Must be a positive integer.
 - `shutdown_policy` - Value for ``spec.lifecycle.shutdownPolicy``.
   When a timer is set and no policy is given, the SDK sends Delete;
@@ -544,6 +544,40 @@ Name of the environment variable.
 #### value
 
 Value of the environment variable.
+
+<a id="k8s_agent_sandbox.models.SandboxClaimShutdownPolicy"></a>
+
+### SandboxClaimShutdownPolicy Objects
+
+```python
+class SandboxClaimShutdownPolicy(str, Enum)
+```
+
+Supported SandboxClaim lifecycle shutdown policies.
+
+``Delete`` removes the claim and its Sandbox.
+``DeleteForeground`` waits for dependent resources to finish deletion.
+``Retain`` keeps the claim and removes its Sandbox dependency.
+
+<a id="k8s_agent_sandbox.models.SandboxClaimLifecycleConfig"></a>
+
+### SandboxClaimLifecycleConfig Objects
+
+```python
+class SandboxClaimLifecycleConfig(BaseModel)
+```
+
+Validated lifecycle options for a SandboxClaim created by the SDK.
+
+<a id="k8s_agent_sandbox.models.SandboxClaimLifecycle"></a>
+
+### SandboxClaimLifecycle Objects
+
+```python
+class SandboxClaimLifecycle(BaseModel)
+```
+
+Lifecycle data in the SandboxClaim Kubernetes API wire format.
 
 <a id="k8s_agent_sandbox.models.SandboxDirectConnectionConfig"></a>
 

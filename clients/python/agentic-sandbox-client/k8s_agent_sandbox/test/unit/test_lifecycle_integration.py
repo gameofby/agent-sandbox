@@ -17,7 +17,7 @@ Integration tests for the shutdown_after_seconds lifecycle feature.
 
 These tests exercise the full code path from create_sandbox() through
 to the K8s API call with real objects. Only the K8s API transport is
-mocked. This validates that construct_sandbox_claim_lifecycle_spec(),
+mocked. This validates that construct_sandbox_claim_lifecycle_model(),
 SandboxClient, and K8sHelper are wired correctly end-to-end.
 """
 
@@ -37,7 +37,7 @@ class TestLifecycleIntegration(unittest.TestCase):
     """End-to-end integration: SandboxClient -> K8sHelper -> manifest body.
 
     Only the K8s API transport (CustomObjectsApi) is mocked.
-    Everything else (construct_sandbox_claim_lifecycle_spec, _create_claim,
+    Everything else (construct_sandbox_claim_lifecycle_model, _create_claim,
     manifest construction) runs the real code.
     """
 

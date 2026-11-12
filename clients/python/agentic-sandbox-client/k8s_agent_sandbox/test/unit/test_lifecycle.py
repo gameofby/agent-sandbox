@@ -16,7 +16,12 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from k8s_agent_sandbox.utils import construct_sandbox_claim_lifecycle_spec
+from k8s_agent_sandbox.models import SandboxClaimLifecycleConfig
+from k8s_agent_sandbox.utils import construct_sandbox_claim_lifecycle_model
+
+
+def construct_lifecycle(**options):
+    return construct_sandbox_claim_lifecycle_model(SandboxClaimLifecycleConfig(**options))
 
 
 class TestConstructSandboxClaimLifecycleSpec(unittest.TestCase):
@@ -26,49 +31,51 @@ class TestConstructSandboxClaimLifecycleSpec(unittest.TestCase):
         frozen_now = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
         mock_datetime.now.return_value = frozen_now
 
-        result = construct_sandbox_claim_lifecycle_spec(300)
+        result = construct_lifecycle(shutdown_after_seconds=300)
 
-        self.assertEqual(result["shutdownTime"], "2026-06-15T12:05:00Z")
-        self.assertEqual(result["shutdownPolicy"], "Delete")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.shutdown_time, "2026-06-15T12:05:00Z")
+        self.assertEqual(result.shutdown_policy, "Delete")
 
     @patch("k8s_agent_sandbox.utils.datetime")
     def test_large_ttl(self, mock_datetime):
         frozen_now = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
         mock_datetime.now.return_value = frozen_now
 
-        result = construct_sandbox_claim_lifecycle_spec(86400)
+        result = construct_lifecycle(shutdown_after_seconds=86400)
 
-        self.assertEqual(result["shutdownTime"], "2026-01-02T00:00:00Z")
-        self.assertEqual(result["shutdownPolicy"], "Delete")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.shutdown_time, "2026-01-02T00:00:00Z")
+        self.assertEqual(result.shutdown_policy, "Delete")
 
     def test_rejects_zero(self):
         with self.assertRaises(ValueError) as ctx:
-            construct_sandbox_claim_lifecycle_spec(0)
-        self.assertIn("positive", str(ctx.exception))
+            construct_lifecycle(shutdown_after_seconds=0)
+        self.assertIn("shutdown_after_seconds", str(ctx.exception))
 
     def test_rejects_negative(self):
         with self.assertRaises(ValueError) as ctx:
-            construct_sandbox_claim_lifecycle_spec(-10)
-        self.assertIn("positive", str(ctx.exception))
+            construct_lifecycle(shutdown_after_seconds=-10)
+        self.assertIn("shutdown_after_seconds", str(ctx.exception))
 
     def test_rejects_bool(self):
         with self.assertRaises(ValueError) as ctx:
-            construct_sandbox_claim_lifecycle_spec(True)
+            construct_lifecycle(shutdown_after_seconds=True)
         self.assertIn("integer", str(ctx.exception))
 
     def test_rejects_float(self):
         with self.assertRaises(ValueError) as ctx:
-            construct_sandbox_claim_lifecycle_spec(1.5)
+            construct_lifecycle(shutdown_after_seconds=1.5)
         self.assertIn("integer", str(ctx.exception))
 
     def test_rejects_string(self):
         with self.assertRaises(ValueError) as ctx:
-            construct_sandbox_claim_lifecycle_spec("10")
+            construct_lifecycle(shutdown_after_seconds="10")
         self.assertIn("integer", str(ctx.exception))
 
     def test_rejects_overflow(self):
         with self.assertRaises(ValueError) as ctx:
-            construct_sandbox_claim_lifecycle_spec(10**18)
+            construct_lifecycle(shutdown_after_seconds=10**18)
         self.assertIn("too large", str(ctx.exception))
 
 
@@ -77,7 +84,7 @@ class TestOptionalClaimLifecycle(unittest.TestCase):
     def test_lifecycle_options(self, mock_datetime):
         mock_datetime.now.return_value = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
         cases = [
-            ({}, {}),
+            ({}, None),
             ({"ttl_seconds_after_finished": 0}, {"shutdownPolicy": "Delete", "ttlSecondsAfterFinished": 0}),
             ({"shutdown_policy": "Retain"}, {"shutdownPolicy": "Retain"}),
             ({"shutdown_policy": "DeleteForeground", "shutdown_after_seconds": 300},
@@ -85,17 +92,37 @@ class TestOptionalClaimLifecycle(unittest.TestCase):
         ]
         for arguments, expected in cases:
             with self.subTest(arguments=arguments):
-                self.assertEqual(construct_sandbox_claim_lifecycle_spec(**arguments), expected)
+                lifecycle = construct_lifecycle(**arguments)
+                actual = (
+                    lifecycle.model_dump(by_alias=True, exclude_none=True)
+                    if lifecycle
+                    else None
+                )
+                self.assertEqual(actual, expected)
 
     def test_invalid_shutdown_policy(self):
         for policy in ("delete", "Suspend"):
             with self.subTest(policy=policy), self.assertRaisesRegex(ValueError, "shutdown_policy"):
-                construct_sandbox_claim_lifecycle_spec(shutdown_policy=policy)
+                construct_lifecycle(shutdown_policy=policy)
 
     def test_invalid_ttl_seconds_after_finished(self):
         for ttl in (-1, True, 1.5):
             with self.subTest(ttl=ttl), self.assertRaisesRegex(ValueError, "ttl_seconds_after_finished"):
-                construct_sandbox_claim_lifecycle_spec(ttl_seconds_after_finished=ttl)
+                construct_lifecycle(ttl_seconds_after_finished=ttl)
+
+    def test_ttl_seconds_after_finished_accepts_int32_maximum(self):
+        result = construct_lifecycle(
+            ttl_seconds_after_finished=2_147_483_647,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.ttl_seconds_after_finished, 2_147_483_647)
+
+    def test_ttl_seconds_after_finished_rejects_values_above_int32_maximum(self):
+        with self.assertRaisesRegex(ValueError, "ttl_seconds_after_finished"):
+            construct_lifecycle(
+                ttl_seconds_after_finished=2_147_483_648,
+            )
 
 
 if __name__ == "__main__":

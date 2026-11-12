@@ -24,11 +24,14 @@ import json
 import os
 import tempfile
 import time
-from typing import Any, Callable, Literal, ParamSpec, TypeVar, cast
+from typing import Any, Callable, ParamSpec, TypeVar, cast
 
 from .constants import SANDBOX_NAME_HASH_LABEL
 from .models import (
     SandboxClaimEnvVar,
+    SandboxClaimLifecycle,
+    SandboxClaimLifecycleConfig,
+    SandboxClaimShutdownPolicy,
     SandboxConnectionConfig,
     SandboxdInClusterConnectionConfig,
     SandboxdPodTunnelConnectionConfig,
@@ -96,50 +99,38 @@ def record_latency(metric: Any) -> Callable[[Callable[P, R]], Callable[P, R]]:
         return cast(Callable[P, R], wrapper)
     return decorator
 
-def construct_sandbox_claim_lifecycle_spec(
-    shutdown_after_seconds: int | None = None,
-    *,
-    shutdown_policy: Literal["Delete", "DeleteForeground", "Retain"] | None = None,
-    ttl_seconds_after_finished: int | None = None,
-) -> dict[str, Any]:
-    """Construct spec.lifecycle from optional timers and shutdownPolicy.
+def construct_sandbox_claim_lifecycle_model(
+    config: SandboxClaimLifecycleConfig,
+) -> SandboxClaimLifecycle | None:
+    """Build a validated lifecycle model for the SandboxClaim API object.
 
     When a timer is set and no policy is given, the SDK sends Delete; the API's
-    own default for an omitted policy is Retain. Omitted options produce an
-    empty dict. Invalid policies or timer values raise ValueError.
+    own default for an omitted policy is Retain. Omitted options produce None.
     """
-    lifecycle: dict[str, Any] = {}
-    if shutdown_policy is not None:
-        if shutdown_policy not in ("Delete", "DeleteForeground", "Retain"):
-            raise ValueError(
-                f"shutdown_policy must be Delete, DeleteForeground, or Retain, got {shutdown_policy!r}"
-            )
-        lifecycle["shutdownPolicy"] = shutdown_policy
-    if ttl_seconds_after_finished is not None:
-        if type(ttl_seconds_after_finished) is not int or ttl_seconds_after_finished < 0:
-            raise ValueError(
-                f"ttl_seconds_after_finished must be a nonnegative integer, got {ttl_seconds_after_finished!r}"
-            )
-        lifecycle["ttlSecondsAfterFinished"] = ttl_seconds_after_finished
-    if shutdown_after_seconds is not None:
-        if type(shutdown_after_seconds) is not int:
-            raise ValueError(
-                f"shutdown_after_seconds must be an integer, got {type(shutdown_after_seconds).__name__}"
-            )
-        if shutdown_after_seconds <= 0:
-            raise ValueError(
-                f"shutdown_after_seconds must be positive, got {shutdown_after_seconds}"
-            )
+    shutdown_time: str | None = None
+    if config.shutdown_after_seconds is not None:
         try:
-            shutdown_time = datetime.now(timezone.utc) + timedelta(seconds=shutdown_after_seconds)
+            shutdown_at = datetime.now(timezone.utc) + timedelta(
+                seconds=config.shutdown_after_seconds,
+            )
         except OverflowError:
             raise ValueError(
-                f"shutdown_after_seconds is too large: {shutdown_after_seconds}"
+                f"shutdown_after_seconds is too large: {config.shutdown_after_seconds}"
             ) from None
-        lifecycle["shutdownTime"] = shutdown_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-    if lifecycle:
-        lifecycle.setdefault("shutdownPolicy", "Delete")
-    return lifecycle
+        shutdown_time = shutdown_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if (
+        shutdown_time is None
+        and config.shutdown_policy is None
+        and config.ttl_seconds_after_finished is None
+    ):
+        return None
+
+    return SandboxClaimLifecycle(
+        shutdown_time=shutdown_time,
+        shutdown_policy=config.shutdown_policy or SandboxClaimShutdownPolicy.DELETE,
+        ttl_seconds_after_finished=config.ttl_seconds_after_finished,
+    )
 
 
 def select_pod_ip(ips: Sequence[object] | None) -> str | None:

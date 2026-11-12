@@ -35,6 +35,7 @@ from k8s_agent_sandbox.sandbox_client import SandboxClient
 from k8s_agent_sandbox.sandbox import Sandbox
 from k8s_agent_sandbox.connector import SandboxConnector
 from k8s_agent_sandbox.models import AdditionalPodMetadata
+from k8s_agent_sandbox.models import SandboxClaimLifecycle
 from k8s_agent_sandbox.pod_metadata import validate_labels
 from k8s_agent_sandbox.models import (
     SandboxDirectConnectionConfig,
@@ -532,8 +533,8 @@ class TestSandboxClient(unittest.TestCase):
             mock_create_claim.assert_called_once()
             lifecycle = mock_create_claim.call_args[1].get("lifecycle")
             self.assertIsNotNone(lifecycle)
-            self.assertEqual(lifecycle["shutdownPolicy"], "Delete")
-            self.assertIn("shutdownTime", lifecycle)
+            self.assertEqual(lifecycle.shutdown_policy, "Delete")
+            self.assertIsNotNone(lifecycle.shutdown_time)
 
     @patch('uuid.uuid4')
     def test_create_sandbox_with_env(self, mock_uuid):
@@ -587,10 +588,10 @@ class TestSandboxClient(unittest.TestCase):
         self.client.tracing_manager = MagicMock()
         self.client.tracing_manager.get_trace_context_json.return_value = None
 
-        lifecycle = {
-            "shutdownTime": "2026-06-15T12:05:00Z",
-            "shutdownPolicy": "Delete",
-        }
+        lifecycle = SandboxClaimLifecycle(
+            shutdown_time="2026-06-15T12:05:00Z",
+            shutdown_policy="Delete",
+        )
         self.client._create_claim(
             "test-claim", "test-warmpool", "test-namespace", lifecycle=lifecycle
         )

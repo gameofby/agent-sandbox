@@ -21,7 +21,7 @@ from typing import Any, List, cast
 from kubernetes import client, config, watch
 import urllib3.exceptions
 from .exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxNotFoundError, SandboxTemplateNotFoundError, SandboxWarmPoolNotFoundError
-from .models import AdditionalPodMetadata
+from .models import AdditionalPodMetadata, SandboxClaimLifecycle
 from .utils import (
     construct_sandbox_claim_env_spec,
     current_not_ready,
@@ -73,7 +73,7 @@ class K8sHelper:
         namespace: str,
         annotations: dict[str, str] | None = None,
         labels: dict[str, str] | None = None,
-        lifecycle: dict[str, Any] | None = None,
+        lifecycle: SandboxClaimLifecycle | None = None,
         volume_claim_templates: list[dict[str, Any]] | None = None,
         pod_metadata: AdditionalPodMetadata | dict[str, Any] | None = None,
         env: dict[str, str] | None = None,
@@ -106,7 +106,11 @@ class K8sHelper:
             }
         }
         if lifecycle:
-            spec["lifecycle"] = lifecycle
+            spec["lifecycle"] = lifecycle.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode="json",
+            )
         if volume_claim_templates:
             spec["volumeClaimTemplates"] = volume_claim_templates
         if pod_metadata:

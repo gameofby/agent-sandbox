@@ -21,7 +21,7 @@ from kubernetes import client
 from kubernetes.config import incluster_config
 import urllib3.exceptions
 from pydantic import ValidationError
-from k8s_agent_sandbox.models import AdditionalPodMetadata
+from k8s_agent_sandbox.models import AdditionalPodMetadata, SandboxClaimLifecycle
 from k8s_agent_sandbox.k8s_helper import K8sHelper
 from k8s_agent_sandbox.exceptions import SandboxClaimFailedError, SandboxMetadataError, SandboxTemplateNotFoundError
 from k8s_agent_sandbox.constants import CLIENT_REQUEST_TIME_ANNOTATION
@@ -140,17 +140,20 @@ class TestK8sHelperCreateSandboxClaim(unittest.TestCase):
         mock_api = MagicMock()
         mock_api_cls.return_value = mock_api
 
-        lifecycle = {
-            "shutdownTime": "2026-12-31T23:59:59Z",
-            "shutdownPolicy": "Delete",
-        }
+        lifecycle = SandboxClaimLifecycle(
+            shutdown_time="2026-12-31T23:59:59Z",
+            shutdown_policy="Delete",
+        )
         helper = K8sHelper()
         helper.create_sandbox_claim(
             "test-claim", "test-warmpool", "test-namespace", lifecycle=lifecycle
         )
 
         body = mock_api.create_namespaced_custom_object.call_args.kwargs["body"]
-        self.assertEqual(body["spec"]["lifecycle"], lifecycle)
+        self.assertEqual(
+            body["spec"]["lifecycle"],
+            {"shutdownTime": "2026-12-31T23:59:59Z", "shutdownPolicy": "Delete"},
+        )
         self.assertEqual(body["spec"]["warmPoolRef"]["name"], "test-warmpool")
 
     def test_no_lifecycle_omits_key(self, mock_config, mock_api_cls, mock_core_cls):

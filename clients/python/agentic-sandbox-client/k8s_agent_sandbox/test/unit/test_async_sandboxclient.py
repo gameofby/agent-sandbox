@@ -42,7 +42,7 @@ pytest.importorskip("kubernetes_asyncio")
 from kubernetes import client as sync_client
 from kubernetes_asyncio import client as async_client
 
-from k8s_agent_sandbox.models import AdditionalPodMetadata
+from k8s_agent_sandbox.models import AdditionalPodMetadata, SandboxClaimLifecycle
 from k8s_agent_sandbox.async_connector import AsyncSandboxConnector
 from k8s_agent_sandbox.async_sandbox import AsyncSandbox
 from k8s_agent_sandbox.async_sandbox_client import (
@@ -735,8 +735,8 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
             call_kwargs = mock_create.call_args
             lifecycle = call_kwargs[1].get("lifecycle")
             self.assertIsNotNone(lifecycle)
-            self.assertEqual(lifecycle["shutdownPolicy"], "Delete")
-            self.assertIn("shutdownTime", lifecycle)
+            self.assertEqual(lifecycle.shutdown_policy, "Delete")
+            self.assertIsNotNone(lifecycle.shutdown_time)
 
     async def test_create_sandbox_with_volume_claim_templates(self):
         self.mock_k8s_helper.wait_for_claim_ready = AsyncMock(return_value="resolved-id")

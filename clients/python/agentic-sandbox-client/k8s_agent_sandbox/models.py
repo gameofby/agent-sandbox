@@ -17,6 +17,7 @@
 import re
 import warnings
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ModelWrapValidatorHandler, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_core import InitErrorDetails
@@ -215,6 +216,82 @@ class SandboxClaimEnvVar(BaseModel):
                 "Invalid environment variable name: must not be '.', '..', or start with '..'"
             )
         return v
+
+
+class SandboxClaimShutdownPolicy(str, Enum):
+    """Supported SandboxClaim lifecycle shutdown policies.
+
+    ``Delete`` removes the claim and its Sandbox.
+    ``DeleteForeground`` waits for dependent resources to finish deletion.
+    ``Retain`` keeps the claim and removes its Sandbox dependency.
+    """
+
+    DELETE = "Delete"
+    DELETE_FOREGROUND = "DeleteForeground"
+    RETAIN = "Retain"
+
+
+def _validate_ttl_seconds_after_finished(value: int | None) -> int | None:
+    if value is None:
+        return value
+    if value < 0:
+        raise ValueError("ttl_seconds_after_finished must be nonnegative")
+    if value > 2_147_483_647:
+        raise ValueError(
+            "ttl_seconds_after_finished must not exceed the int32 maximum 2147483647"
+        )
+    return value
+
+
+class SandboxClaimLifecycleConfig(BaseModel):
+    """Validated lifecycle options for a SandboxClaim created by the SDK."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    shutdown_after_seconds: int | None = Field(default=None, strict=True)
+    shutdown_policy: SandboxClaimShutdownPolicy | None = None
+    ttl_seconds_after_finished: int | None = Field(default=None, strict=True)
+
+    @field_validator("shutdown_after_seconds")
+    @classmethod
+    def validate_shutdown_after_seconds(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("shutdown_after_seconds must be positive")
+        return value
+
+    @field_validator("ttl_seconds_after_finished")
+    @classmethod
+    def validate_ttl_seconds_after_finished(cls, value: int | None) -> int | None:
+        return _validate_ttl_seconds_after_finished(value)
+
+
+class SandboxClaimLifecycle(BaseModel):
+    """Lifecycle data in the SandboxClaim Kubernetes API wire format."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, use_enum_values=True)
+
+    shutdown_time: str | None = Field(
+        default=None,
+        serialization_alias="shutdownTime",
+        validation_alias="shutdownTime",
+    )
+    shutdown_policy: SandboxClaimShutdownPolicy | None = Field(
+        default=None,
+        serialization_alias="shutdownPolicy",
+        validation_alias="shutdownPolicy",
+    )
+    ttl_seconds_after_finished: int | None = Field(
+        default=None,
+        strict=True,
+        serialization_alias="ttlSecondsAfterFinished",
+        validation_alias="ttlSecondsAfterFinished",
+    )
+
+    @field_validator("ttl_seconds_after_finished")
+    @classmethod
+    def validate_ttl_seconds_after_finished(cls, value: int | None) -> int | None:
+        return _validate_ttl_seconds_after_finished(value)
+
 
 class SandboxDirectConnectionConfig(BaseModel):
     """Configuration for connecting directly to a Sandbox URL.
