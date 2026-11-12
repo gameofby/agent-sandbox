@@ -42,6 +42,19 @@ def artifacts(**files):
 
 
 class ClassifyRedRunTest(unittest.TestCase):
+    def failed_clean_clone_fetcher(self, build_log=None):
+        defaults = artifacts(
+            finished={"result": "FAILURE", "revision": "abc"},
+            clone_records=[{"refs": {"repo": "agent-sandbox"}}],
+        )
+
+        def fetch(name):
+            if name == "build-log.txt":
+                return build_log
+            return defaults(name)
+
+        return fetch
+
     def test_aborted_run_is_not_a_failure(self):
         cls = flake_report.classify_red_run(
             False, False, artifacts(finished={"result": "ABORTED"}))
@@ -124,49 +137,48 @@ class ClassifyRedRunTest(unittest.TestCase):
         self.assertEqual(cls, "infra")
 
     def test_autogen_gate_failure_is_pretest_breakage(self):
-        # presubmit-test-autogen-up-to-date writes no junit, so a PR with
-        # stale generated files is a red column with a clean clone; the
-        # gate's error line in the build log marks it as the PR's breakage.
-        data = artifacts(
-            finished={"result": "FAILURE", "revision": "abc"},
-            clone_records=[{"refs": {"repo": "agent-sandbox"}}],
-        )
-
-        def fetch(name):
-            if name == "build-log.txt":
-                return ("Full diff:\n M docs/go_sdk_reference.md\n"
-                        "ERROR: Generated files out-of-date. Please run "
-                        "'dev/tools/fix-api-docs' and update your PR.\n")
-            return data(name)
-
-        self.assertEqual(flake_report.classify_red_run(False, False, fetch),
+        # The presubmit writes no junit. A clean clone and a red column do not
+        # reveal the cause. The gate's error line shows that the PR broke it.
+        self.assertEqual(flake_report.classify_red_run(
+            False, False, self.failed_clean_clone_fetcher(
+                "Full diff:\n M docs/go_sdk_reference.md\n"
+                "ERROR: Generated files out-of-date. Please run "
+                "'dev/tools/fix-api-docs' and update your PR.\n"),
+            generated_files_presubmit=True),
                          "pretest_failure")
 
     def test_build_log_without_gate_marker_stays_infra(self):
-        data = artifacts(
-            finished={"result": "FAILURE", "revision": "abc"},
-            clone_records=[{"refs": {"repo": "agent-sandbox"}}],
-        )
-
-        def fetch(name):
-            if name == "build-log.txt":
-                return "Error: wait time exceeded during validation\n"
-            return data(name)
-
-        self.assertEqual(flake_report.classify_red_run(False, False, fetch), "infra")
+        self.assertEqual(flake_report.classify_red_run(
+            False, False, self.failed_clean_clone_fetcher(
+                "Error: wait time exceeded during validation\n"),
+            generated_files_presubmit=True),
+                         "infra")
 
     def test_unreachable_build_log_is_unknown_not_infra(self):
-        data = artifacts(
-            finished={"result": "FAILURE", "revision": "abc"},
-            clone_records=[{"refs": {"repo": "agent-sandbox"}}],
-        )
+        defaults = self.failed_clean_clone_fetcher()
 
         def fetch(name):
             if name == "build-log.txt":
                 raise flake_report.FetchUnavailable("down")
-            return data(name)
+            return defaults(name)
 
-        self.assertEqual(flake_report.classify_red_run(False, False, fetch), "unknown")
+        self.assertEqual(
+            flake_report.classify_red_run(
+                False, False, fetch, generated_files_presubmit=True),
+            "unknown")
+
+    def test_ordinary_lane_does_not_read_generated_files_build_log(self):
+        fetched = []
+        defaults = self.failed_clean_clone_fetcher()
+
+        def fetch(name):
+            fetched.append(name)
+            return defaults(name)
+
+        self.assertEqual(
+            flake_report.classify_red_run(False, False, fetch), "infra")
+        self.assertEqual(
+            fetched, ["finished.json", "clone-records.json"])
 
     def test_missing_artifacts_stay_infra(self):
         # When the run dir has no finished.json or clone-records.json we
@@ -247,7 +259,8 @@ class MakeArtifactFetcherTest(unittest.TestCase):
 
         def fake_run(cmd, capture_output, text):
             calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 22, stdout="", stderr="404")
+            return subprocess.CompletedProcess(cmd, 22, stdout="\n404",
+                                               stderr="")
         with mock.patch.object(flake_report.subprocess, "run", fake_run), \
              mock.patch.object(flake_report.time, "sleep") as sleep:
             with self.assertRaises(RuntimeError) as ctx:
@@ -255,6 +268,48 @@ class MakeArtifactFetcherTest(unittest.TestCase):
         self.assertNotIsInstance(ctx.exception, flake_report.FetchUnavailable)
         self.assertEqual(len(calls), 1)
         sleep.assert_not_called()
+
+    def test_fetch_text_retries_a_server_error(self):
+        calls = []
+
+        def fake_run(cmd, capture_output, text):
+            calls.append(cmd)
+            rc = 22 if len(calls) < 3 else 0
+            stdout = "\n503" if rc == 22 else "body\n200"
+            return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+        with mock.patch.object(flake_report.subprocess, "run", fake_run), \
+             mock.patch.object(flake_report.time, "sleep"):
+            self.assertEqual(flake_report.fetch_text("https://x/y"), "body")
+        self.assertEqual(len(calls), 3)
+
+    def test_fetch_text_retries_partial_and_http2_failures(self):
+        for returncode in (18, 92):
+            with self.subTest(returncode=returncode):
+                calls = []
+
+                def fake_run(cmd, capture_output, text):
+                    calls.append(cmd)
+                    rc = returncode if len(calls) == 1 else 0
+                    stdout = "\n200" if rc == 0 else ""
+                    return subprocess.CompletedProcess(
+                        cmd, rc, stdout=stdout, stderr="temporary")
+
+                with mock.patch.object(
+                        flake_report.subprocess, "run", fake_run), \
+                     mock.patch.object(flake_report.time, "sleep"):
+                    self.assertEqual(
+                        flake_report.fetch_text("https://x/y"), "")
+                self.assertEqual(len(calls), 2)
+
+    def test_fetch_text_reports_exhausted_server_errors_as_unavailable(self):
+        def fake_run(cmd, capture_output, text):
+            return subprocess.CompletedProcess(
+                cmd, 22, stdout="\n503", stderr="")
+
+        with mock.patch.object(flake_report.subprocess, "run", fake_run), \
+             mock.patch.object(flake_report.time, "sleep"):
+            with self.assertRaises(flake_report.FetchUnavailable):
+                flake_report.fetch_text("https://x/y")
 
     def test_resolves_pr_logs_directory_pointer(self):
         urls = []
@@ -467,6 +522,77 @@ class AnalyzeTabTest(unittest.TestCase):
         self.assertIn("pre-test PR breakage", report)
         self.assertIn("were aborted", report)
         self.assertIn("1 of 5 red runs", report)
+
+    def test_junit_less_generated_gate_is_pretest_breakage(self):
+        table = {
+            "query": "kubernetes-ci-logs/pr-logs/directory/"
+                     "presubmit-test-autogen-up-to-date",
+            "changelists": ["g0", "g1", "g2"],
+            "column_ids": ["\ue000g0", "\ue000g1", "\ue000g2"],
+            "timestamps": [300, 200, 100],
+            "tests": [
+                {"name": "job.Overall", "statuses": rle([12, 12, 1])},
+            ],
+        }
+        art = {
+            "g0": {
+                "finished.json": {"result": "FAILURE", "revision": "abc"},
+                "clone-records.json": [{"failed": False}],
+                "build-log.txt": (
+                    "ERROR: Generated files out-of-date. Please run "
+                    "'dev/tools/fix-api-docs' and update your PR.\n"
+                ),
+            },
+            "g1": {
+                "finished.json": {"result": "FAILURE", "revision": "abc"},
+                "clone-records.json": [{"failed": False}],
+                "build-log.txt": "Error: wait time exceeded during validation\n",
+            },
+        }
+
+        def fake_fetcher(gcs_query, build_id):
+            return lambda name: art.get(build_id, {}).get(name)
+
+        with mock.patch.object(flake_report, "fetch_json",
+                               return_value=table), \
+             mock.patch.object(flake_report, "make_artifact_fetcher",
+                               fake_fetcher):
+            _, _, infra, _, _ = flake_report.analyze_tab("dash", "tab", 3)
+        self.assertEqual(infra["pretest_failures"], 1)
+        self.assertEqual(infra["infra_runs"], 1)
+
+    def test_unrelated_lane_does_not_read_generated_files_build_log(self):
+        table = {
+            "query": "kubernetes-ci-logs/pr-logs/directory/"
+                     "presubmit-test-something-else",
+            "changelists": ["o0", "o1"],
+            "column_ids": ["\ue000o0", "\ue000o1"],
+            "timestamps": [200, 100],
+            "tests": [
+                {"name": "job.Overall", "statuses": rle([12, 1])},
+            ],
+        }
+        art = {
+            "o0": {
+                "finished.json": {"result": "FAILURE", "revision": "abc"},
+                "clone-records.json": [{"failed": False}],
+            },
+        }
+        fetched = []
+
+        def fake_fetcher(gcs_query, build_id):
+            def fetch(name):
+                fetched.append((build_id, name))
+                return art.get(build_id, {}).get(name)
+            return fetch
+
+        with mock.patch.object(flake_report, "fetch_json",
+                               return_value=table), \
+             mock.patch.object(flake_report, "make_artifact_fetcher",
+                               fake_fetcher):
+            _, _, infra, _, _ = flake_report.analyze_tab("dash", "tab", 2)
+        self.assertIsNone(infra)
+        self.assertNotIn(("o0", "build-log.txt"), fetched)
 
 
 class ShouldSkipForClosedTest(unittest.TestCase):

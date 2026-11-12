@@ -17,11 +17,12 @@
 
 Pulls recent results from the TestGrid JSON API, classifies each failing test
 as flaky (intermittent), consistently failing, or an infrastructure failure
-(the job died before tests ran), and prints a markdown report. Red runs with
-no failing testcase are resolved against the run's GCS artifacts first:
-aborted runs, stale-PR clone failures, and pre-test PR breakage (compile,
-vet, mypy, and generated-file gates) are reported separately instead of being
-counted as infra.
+(the job died before tests ran), and prints a markdown report. The report
+resolves red runs with no failing testcase against the run's GCS artifacts
+first. It separates aborted runs, stale-PR clone failures, and pre-test PR
+breakage from infrastructure failures. Pre-test breakage includes compile,
+vet, mypy, and generated-file gate failures. The report lists each cause
+separately.
 Per-test failures are not counted when the run was aborted, when a whole
 suite failed at once (broken fixture), or when the failing PR modified the
 test's own sources; such PR-local failures are listed but never filed. A test
@@ -35,8 +36,9 @@ the report lists the job as consistently failing and, with --update-issues,
 files a `kind/failing-test` issue that names the first failing commit. When
 such a job fails intermittently, the report lists it as flaky and files a
 `kind/flake` issue, because a flaky publish job can skip images a release
-promotes. The report skips junit-less presubmit tabs (lint, autogen): a red
-run there is the PR's own change, not a broken main.
+promotes. The report skips most junit-less presubmit tabs because a red run
+there is the pull request's own change. The generated-files presubmit is the
+exception because its build log can prove that the pull request broke the gate.
 
 With --update-issues it also files or refreshes one `kind/flake` GitHub issue
 per flaky test, so the issue tracker is the durable state: reruns are
@@ -88,20 +90,29 @@ JOB_FLAKE_MARKER_PREFIX = "<!-- flake-report:job-flake="
 
 
 class FetchUnavailable(RuntimeError):
-    """The server could not be reached, so nothing is known about the URL.
+    """The fetcher exhausted retries after a temporary failure.
 
-    Distinct from a plain RuntimeError, which means the server answered and
-    the resource is absent (HTTP 4xx). Callers that classify CI runs must
-    treat an unreachable artifact as unknown, never as missing.
+    The server may have answered with a temporary status or may not have
+    answered. Nothing is known about the resource. Callers that classify CI
+    runs must treat it as unknown, never as missing.
     """
 
 
-# curl exit codes for failures that happen before any HTTP answer: DNS,
-# connect, timeout, TLS, and dropped connections. Anything else, above all
-# 22 (HTTP error under -f), is an answer and is not retried.
-TRANSIENT_CURL_EXITS = {6, 7, 28, 35, 52, 55, 56}
+# curl exit codes for temporary failures: DNS, connect, timeout, TLS, partial
+# transfers, dropped connections, and HTTP/2 protocol errors. Exit 22 means
+# HTTP error under -f. The code retries it only for the statuses below.
+TRANSIENT_CURL_EXITS = {6, 7, 16, 18, 28, 35, 52, 55, 56, 92}
+TRANSIENT_HTTP_STATUSES = {408, 425, 429, *range(500, 600)}
 FETCH_ATTEMPTS = 3
 FETCH_RETRY_SECONDS = (2, 5)
+
+
+def split_curl_response(output):
+    """Returns the body and HTTP status appended by curl --write-out."""
+    _, separator, status = output.rpartition("\n")
+    if separator and status.isdigit():
+        return output[:output.rfind("\n")], int(status)
+    return output, None
 
 
 def fetch_text(url):
@@ -110,17 +121,24 @@ def fetch_text(url):
     # prerequisite alongside gh and jq.
     for attempt in range(1, FETCH_ATTEMPTS + 1):
         result = subprocess.run(
-            ["curl", "-fsSL", "--max-time", "60", url],
+            ["curl", "-fsSL", "--max-time", "60",
+             "--write-out", "\n%{http_code}", url],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
-            return result.stdout
-        if result.returncode not in TRANSIENT_CURL_EXITS:
-            raise RuntimeError(f"fetch {url} failed: {result.stderr.strip()}")
+            body, _ = split_curl_response(result.stdout)
+            return body
+        _, status = split_curl_response(result.stdout)
+        transient = result.returncode in TRANSIENT_CURL_EXITS
+        if result.returncode == 22 and status in TRANSIENT_HTTP_STATUSES:
+            transient = True
+        detail = f"HTTP {status}" if status is not None else result.stderr.strip()
+        if not transient:
+            raise RuntimeError(f"fetch {url} failed: {detail}")
         if attempt < FETCH_ATTEMPTS:
             time.sleep(FETCH_RETRY_SECONDS[min(attempt, len(FETCH_RETRY_SECONDS)) - 1])
     raise FetchUnavailable(
-        f"fetch {url} unreachable after {FETCH_ATTEMPTS} attempts: {result.stderr.strip()}")
+        f"fetch {url} unavailable after {FETCH_ATTEMPTS} attempts: {detail}")
 
 
 def fetch_json(url):
@@ -174,11 +192,12 @@ def column_build_id(column_ids, i):
 
 
 def make_artifact_fetcher(gcs_query, build_id):
-    """Returns fetch(name) -> parsed JSON artifact of one prow run, or None.
+    """Returns fetch(name) for artifacts from one Prow run.
 
     pr-logs/directory tab queries don't contain the run dirs themselves;
     each build has a pointer file naming the real gs:// location. The pointer
     is resolved lazily and cached so a run costs at most one extra fetch.
+    fetch(name) returns None when the run has no such artifact.
     """
     cache = {}
 
@@ -202,12 +221,12 @@ def make_artifact_fetcher(gcs_query, build_id):
         return cache["dir"]
 
     def fetch(name):
-        """Returns the parsed artifact, None when the run has no such file.
+        """Returns parsed JSON or raw text, or None when the run has no file.
 
-        JSON artifacts are parsed; a .txt artifact (build-log.txt) is
-        returned as text. Raises FetchUnavailable when the server could not
-        be reached, so a network blip is never mistaken for a missing
-        artifact.
+        The function parses JSON artifacts. It returns text artifacts,
+        including build-log.txt, as raw text. It raises FetchUnavailable after
+        temporary failures exhaust their retries, so a network blip never
+        looks like a missing artifact.
         """
         base = resolve()
         if not base:
@@ -239,14 +258,43 @@ def clone_merge_conflict(record):
     return False
 
 
-# Error lines printed by junit-less gates when the PR's own change fails
-# them. dev/ci/presubmits/test-autogen-up-to-date writes no junit at all, so
-# a PR with stale generated files goes red in the same shape as a pod that
-# died, and only the build log tells them apart.
-PRETEST_GATE_MARKERS = ("ERROR: Generated files out-of-date",)
+# The generated-files presubmit prints this error when the PR's change fails
+# the gate. The presubmit writes no junit, so only the build log distinguishes
+# this author-actionable failure from a pod that died.
+AUTOGEN_GATE_ERROR = "ERROR: Generated files out-of-date"
+ARTIFACT_UNAVAILABLE = object()
 
 
-def classify_red_run(has_failing_test, has_test_results, fetch_artifact):
+def artifact_or_unavailable(fetch_artifact, name):
+    """Returns one artifact, or a sentinel after temporary retries fail."""
+    try:
+        return fetch_artifact(name)
+    except FetchUnavailable:
+        return ARTIFACT_UNAVAILABLE
+
+
+def is_aborted(finished):
+    """True when a finished artifact records an aborted run."""
+    return (finished.get("result") or "").upper() == "ABORTED"
+
+
+def classify_generated_files_failure(artifact):
+    """Classifies a JUnit-less generated-files presubmit result.
+
+    The build log carries the gate error when the pull request broke the gate.
+    When that log is unavailable, the cause is unknown. A reachable log without
+    the gate marker leaves the run in the infrastructure count.
+    """
+    build_log = artifact("build-log.txt")
+    if build_log is ARTIFACT_UNAVAILABLE:
+        return "unknown"
+    if build_log and AUTOGEN_GATE_ERROR in build_log:
+        return "pretest_failure"
+    return "infra"
+
+
+def classify_red_run(has_failing_test, has_test_results, fetch_artifact, *,
+                     generated_files_presubmit=False):
     """Classifies why one red Overall column went red.
 
     A red Overall cell with no failing junit testcase is not necessarily an
@@ -257,10 +305,9 @@ def classify_red_run(has_failing_test, has_test_results, fetch_artifact):
       "aborted"         -- run was cancelled, not a failure at all
       "test_failure"    -- a junit testcase failed; the per-test rows tell
                            the story
-      "pretest_failure" -- junit exists with zero failing testcases, or a
-                           junit-less gate printed one of
-                           PRETEST_GATE_MARKERS: the PR broke a pre-test
-                           gate, author-actionable
+      "pretest_failure" -- junit exists with zero failing testcases, or the
+                           generated-files gate printed its error: the PR
+                           broke a pre-test gate, so the author can fix it
       "clone_failure"   -- the PR no longer merges cleanly onto main: a
                            merge conflict verified in clone-records.json
                            (rebase needed)
@@ -269,27 +316,30 @@ def classify_red_run(has_failing_test, has_test_results, fetch_artifact):
       "unknown"         -- the run's artifacts could not be fetched, so no
                            verdict is possible; counted nowhere
 
-    fetch_artifact(name) returns the parsed JSON artifact from the run's GCS
-    dir (the raw text for build-log.txt), None when the run has no such
-    file, and raises FetchUnavailable when the server could not be reached;
-    only artifacts needed for the verdict are fetched.
+    fetch_artifact(name) returns parsed JSON or raw text from the run's GCS
+    directory. It returns None when the run has no such file. It raises
+    FetchUnavailable after temporary failures exhaust their retries. The
+    classifier fetches only the artifacts that the verdict needs. It reads the
+    build log only when generated_files_presubmit is true.
     """
-    try:
-        finished = fetch_artifact("finished.json") or {}
-    except FetchUnavailable:
+    def artifact(name):
+        return artifact_or_unavailable(fetch_artifact, name)
+
+    finished = artifact("finished.json")
+    if finished is ARTIFACT_UNAVAILABLE:
         return "unknown"
+    finished = finished or {}
     # podutils writes "ABORTED" but crier writes "aborted" when the pod died
     # before podutils could upload — exactly the junit-less runs classified
     # here, so the comparison must be case-insensitive.
-    if (finished.get("result") or "").upper() == "ABORTED":
+    if is_aborted(finished):
         return "aborted"
     if has_failing_test:
         return "test_failure"
     if has_test_results:
         return "pretest_failure"
-    try:
-        clone_records = fetch_artifact("clone-records.json")
-    except FetchUnavailable:
+    clone_records = artifact("clone-records.json")
+    if clone_records is ARTIFACT_UNAVAILABLE:
         return "unknown"
     if clone_records is not None:
         failed = [r for r in clone_records if r.get("failed")]
@@ -299,17 +349,50 @@ def classify_red_run(has_failing_test, has_test_results, fetch_artifact):
             # The clone failed without a merge conflict (network error,
             # unreachable ref): that is infrastructure, not a stale PR.
             return "infra"
-    # A junit-less gate (autogen) leaves no test rows to show that the PR's
-    # own change failed it; its build log ends with the gate's error line.
-    try:
-        build_log = fetch_artifact("build-log.txt")
-    except FetchUnavailable:
-        return "unknown"
-    if build_log and any(marker in build_log for marker in PRETEST_GATE_MARKERS):
-        return "pretest_failure"
+    # The generated-files presubmit leaves no test rows.
+    if generated_files_presubmit:
+        generated_files_verdict = classify_generated_files_failure(artifact)
+        if generated_files_verdict != "infra":
+            return generated_files_verdict
     # Without a gate marker or clone-records.json the cause of a junit-less
     # red run cannot be proven benign, so it stays in the infra count.
     return "infra"
+
+
+def classify_red_columns(*, ncols, overall, failing_in, ran_in, fetcher,
+                         generated_files_presubmit):
+    """Classifies each Overall column and finds aborted and unknown runs.
+
+    A red Overall cell with no failing JUnit testcase has several possible
+    causes. A failing test cell in a non-red Overall column can also belong
+    to a run that Prow aborted before the Overall cell settled. The caller
+    supplies column predicates and a per-column artifact fetcher.
+    """
+    col_class = {}
+    aborted_cols = set()
+    unknown_cols = set()
+    for i in range(ncols):
+        status = overall[i] if overall is not None and i < len(overall) else 0
+        red = status in FAIL_STATUSES
+        has_fail = failing_in(i)
+        if red:
+            verdict = classify_red_run(
+                has_fail, ran_in(i), fetcher(i),
+                generated_files_presubmit=generated_files_presubmit)
+            col_class[i] = verdict
+            if verdict == "aborted":
+                aborted_cols.add(i)
+            elif verdict == "unknown":
+                unknown_cols.add(i)
+        elif has_fail:
+            try:
+                finished = fetcher(i)("finished.json") or {}
+            except FetchUnavailable:
+                unknown_cols.add(i)
+                continue
+            if is_aborted(finished):
+                aborted_cols.add(i)
+    return col_class, aborted_cols, unknown_cols
 
 
 PR_LOGS_PULL_DIR = re.compile(r"/pr-logs/pull/[^/]+/(\d+)/")
@@ -465,6 +548,18 @@ def is_presubmit_tab(gcs_query, tab):
     return not tab.startswith(("post-", "periodic-", "ci-"))
 
 
+def is_generated_files_presubmit(gcs_query, tab):
+    """True when the tab is the generated-files presubmit.
+
+    This presubmit needs a build-log check because it writes no JUnit results.
+    Without that check, a stale generated file looks like infrastructure death.
+    """
+    if gcs_query:
+        return gcs_query.rstrip("/").endswith(
+            "/presubmit-test-autogen-up-to-date")
+    return tab == "presubmit-test-autogen-up-to-date"
+
+
 def run_commit(fetch):
     """Returns the SHA a run built, or "" when the artifacts do not say.
 
@@ -506,7 +601,7 @@ def job_health(tab, overall, timestamps, fetcher, job_history):
         return finished_cache[i]
 
     def aborted(i):
-        return (finished_of(i).get("result") or "").upper() == "ABORTED"
+        return is_aborted(finished_of(i))
 
     def failure_ms(i):
         seconds = finished_of(i).get("timestamp")
@@ -616,31 +711,22 @@ def analyze_tab(dashboard, tab, window, pr_files=None):
     # cell, red Overall or not: a run cancelled mid-suite leaves junit
     # errors in the test rows while its Overall cell never settles to a
     # failure, and those errors must not count as flakes. Only meaningful
-    # on tabs that report per-test rows; on junit-less tabs (lint, autogen)
-    # a red run is indistinguishable from a legitimately failing PR.
+    # on tabs that report per-test rows. On a junit-less presubmit tab, a
+    # generated-files error in the build log remains distinguishable from a
+    # legitimately failing pull request. The generated-files tab keeps both
+    # the proven gate failures and unclassified infrastructure failures.
     # A column whose artifacts could not be fetched is unknown: it might be
     # an aborted run, so it is kept out of every count rather than guessed.
-    col_class = {}
-    aborted_cols = set()
-    unknown_cols = set()
-    if test_rows:
-        for i in range(ncols):
-            red = overall is not None and cell(overall, i) in FAIL_STATUSES
-            has_fail = failing_in(i)
-            if red:
-                col_class[i] = classify_red_run(has_fail, ran_in(i), fetcher(i))
-                if col_class[i] == "aborted":
-                    aborted_cols.add(i)
-                elif col_class[i] == "unknown":
-                    unknown_cols.add(i)
-            elif has_fail:
-                try:
-                    finished = fetcher(i)("finished.json") or {}
-                except FetchUnavailable:
-                    unknown_cols.add(i)
-                    continue
-                if (finished.get("result") or "").upper() == "ABORTED":
-                    aborted_cols.add(i)
+    generated_files_without_junit = (
+        not test_rows and overall is not None
+        and is_generated_files_presubmit(gcs_query, tab)
+    )
+    col_class, aborted_cols, unknown_cols = {}, set(), set()
+    if test_rows or generated_files_without_junit:
+        col_class, aborted_cols, unknown_cols = classify_red_columns(
+            ncols=ncols, overall=overall, failing_in=failing_in,
+            ran_in=ran_in, fetcher=fetcher,
+            generated_files_presubmit=generated_files_without_junit)
 
     col_pr = {}
 
@@ -841,8 +927,8 @@ def analyze_tab(dashboard, tab, window, pr_files=None):
 
     # A junit-less postsubmit or periodic job has no test rows for the
     # per-test rules above to see, so the Overall row decides whether it is
-    # broken or flaky. Presubmit tabs stay out: a red lint or autogen run is
-    # the PR's own doing.
+    # broken or flaky. Other junit-less presubmits stay out because their red
+    # runs are the pull request's own concern.
     if not test_rows and overall is not None and not is_presubmit_tab(gcs_query, tab):
         health = job_health(tab, overall, timestamps, fetcher, job_history)
         if health and health[0] == "breakage":
@@ -946,8 +1032,8 @@ def render_report(dashboard, flaky, consistent, infra, window, pr_local=(),
         if i.get("pretest_failures"):
             lines.append(
                 f"- {i['tab']}: {i['pretest_failures']} red run(s) were "
-                f"pre-test PR breakage (compile/vet/mypy/autogen gates — "
-                f"author-actionable)")
+                f"pre-test PR breakage (compile, vet, mypy, and "
+                f"generated-file gates, which authors fix)")
         if i.get("unknown_runs"):
             lines.append(
                 f"- {i['tab']}: {i['unknown_runs']} red run(s) could not be "
@@ -1224,10 +1310,10 @@ def update_issues(repo, flaky, infra, dry_run, breakages=()):
 
 Job history: {i['job_history']}
 
-These are not fixed by editing tests; look at `dev/ci/shared/runner.py` retries,
-image prepulls, or job resources. Aborted runs, stale-PR clone failures, and
-PRs that break a pre-test gate (compile/vet/mypy/generated files) are already
-excluded from this count.
+Editing tests cannot fix these failures. Inspect `dev/ci/shared/runner.py`
+retries, image prepulls, or job resources. The report excludes aborted runs
+and stale-PR clone failures. It also excludes PRs that fail a pre-test gate
+for compilation, vet, mypy, or generated files.
 
 /kind flake
 <!-- last-reported-failure={i['last_failure_ts']} -->
