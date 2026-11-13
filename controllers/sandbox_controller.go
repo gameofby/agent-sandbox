@@ -140,27 +140,67 @@ func checkOwnership(obj client.Object, sandbox *sandboxv1beta1.Sandbox) (resourc
 	return resourceOwnedByOther, controllerRef
 }
 
-// sandboxCanAdopt reports whether the Sandbox may take ownership of an
-// unowned child. It reads the Sandbox from the API server because the
-// informer cache can show a child released by an orphan delete before it
-// shows the Sandbox's deletionTimestamp. Adopting the child at that point
-// makes it a dependent of a Sandbox that is about to disappear, and the
-// garbage collector then deletes the child that the orphan delete meant to
-// keep. The garbage collector only orphans dependents after the deletion is
-// recorded, so a read made after the child was seen unowned observes it.
-func (r *SandboxReconciler) sandboxCanAdopt(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (bool, error) {
-	reader := client.Reader(r.Client)
-	if r.APIReader != nil {
-		reader = r.APIReader
+type sandboxAdoptionDecision string
+
+const (
+	sandboxAdoptionUnknown   sandboxAdoptionDecision = "unknown"
+	sandboxAdoptionAllowed   sandboxAdoptionDecision = "allowed"
+	sandboxAdoptionMissing   sandboxAdoptionDecision = "missing"
+	sandboxAdoptionRecreated sandboxAdoptionDecision = "recreated"
+	sandboxAdoptionDeleting  sandboxAdoptionDecision = "deleting"
+)
+
+func (d sandboxAdoptionDecision) refusalReason() string {
+	switch d {
+	case sandboxAdoptionAllowed:
+		return ""
+	case sandboxAdoptionMissing:
+		return "Sandbox no longer exists"
+	case sandboxAdoptionRecreated:
+		return "Sandbox was recreated with a different UID"
+	case sandboxAdoptionDeleting:
+		return "Sandbox is being deleted"
+	default:
+		return "Sandbox adoption decision is unknown"
+	}
+}
+
+// sandboxAdoptionDecision returns the live Sandbox adoption state.
+// The informer cache can show an unowned child before it shows the Sandbox
+// deletion. The API server records the deletion before the garbage collector
+// orphans children. The controller therefore reads the Sandbox from the API
+// server, where the deletion is visible.
+func (r *SandboxReconciler) sandboxAdoptionDecision(ctx context.Context, sandbox *sandboxv1beta1.Sandbox) (sandboxAdoptionDecision, error) {
+	if r.APIReader == nil {
+		return sandboxAdoptionUnknown, fmt.Errorf("APIReader is required before adopting an unowned child")
 	}
 	live := &sandboxv1beta1.Sandbox{}
-	if err := reader.Get(ctx, client.ObjectKeyFromObject(sandbox), live); err != nil {
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(sandbox), live); err != nil {
 		if k8serrors.IsNotFound(err) {
-			return false, nil
+			return sandboxAdoptionMissing, nil
 		}
-		return false, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
+		return sandboxAdoptionUnknown, fmt.Errorf("failed to read Sandbox before adopting a child: %w", err)
 	}
-	return live.UID == sandbox.UID && live.DeletionTimestamp.IsZero(), nil
+	if live.UID != sandbox.UID {
+		return sandboxAdoptionRecreated, nil
+	}
+	if !live.DeletionTimestamp.IsZero() {
+		return sandboxAdoptionDeleting, nil
+	}
+	return sandboxAdoptionAllowed, nil
+}
+
+func (r *SandboxReconciler) canAdoptUnownedChild(ctx context.Context, sandbox *sandboxv1beta1.Sandbox, kind, name string) (bool, error) {
+	decision, err := r.sandboxAdoptionDecision(ctx, sandbox)
+	if err != nil {
+		return false, err
+	}
+	if decision == sandboxAdoptionAllowed {
+		return true, nil
+	}
+	log.FromContext(ctx).V(4).Info("Refusing to adopt unowned resource",
+		"Kind", kind, "Name", name, "Sandbox.Name", sandbox.Name, "Reason", decision.refusalReason())
+	return false, nil
 }
 
 // isOwnedBySandbox reports whether pod is non-nil and owned by the given Sandbox.
@@ -319,9 +359,8 @@ func (m *lifecycleTimeMap) markError(key types.NamespacedName, uid types.UID) bo
 type SandboxReconciler struct {
 	client.Client
 	// APIReader reads directly from the API server, bypassing the informer
-	// cache. Used only to confirm that a Sandbox still exists and is not being
-	// deleted before it adopts an unowned child. Falls back to Client when
-	// unset (e.g. in unit tests with a fake client).
+	// cache. The reconciler requires it to confirm that a Sandbox still exists
+	// and is not being deleted before it adopts an unowned child.
 	APIReader     client.Reader
 	Scheme        *runtime.Scheme
 	Recorder      events.EventRecorder
@@ -1601,13 +1640,11 @@ func (r *SandboxReconciler) reconcileService(ctx context.Context, sandbox *sandb
 				service.Name, service.Spec.ClusterIP, corev1.ClusterIPNone)
 		}
 
-		canAdopt, err := r.sandboxCanAdopt(ctx, sandbox)
+		canAdopt, err := r.canAdoptUnownedChild(ctx, sandbox, "Service", service.Name)
 		if err != nil {
 			return nil, err
 		}
 		if !canAdopt {
-			logger.V(4).Info("Refusing to adopt unowned service: Sandbox is being deleted",
-				"Service.Name", service.Name, "Sandbox.Name", sandbox.Name)
 			r.clearServiceStatus(sandbox)
 			return nil, nil
 		}
@@ -1859,13 +1896,11 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 					pod.Name, sandboxv1beta1.SandboxAdoptableLabel, sandboxv1beta1.SandboxNameHashLabel)
 			}
 
-			canAdopt, err := r.sandboxCanAdopt(ctx, sandbox)
+			canAdopt, err := r.canAdoptUnownedChild(ctx, sandbox, "Pod", pod.Name)
 			if err != nil {
 				return nil, 0, err
 			}
 			if !canAdopt {
-				logger.V(4).Info("Refusing to adopt unowned pod: Sandbox is being deleted",
-					"Pod.Name", pod.Name, "Sandbox.Name", sandbox.Name)
 				return pod, 0, nil
 			}
 
@@ -2289,13 +2324,11 @@ func (r *SandboxReconciler) reconcilePVCs(ctx context.Context, sandbox *sandboxv
 						pvcName, sandboxv1beta1.SandboxAdoptableLabel, sandboxv1beta1.SandboxNameHashLabel)
 				}
 
-				canAdopt, err := r.sandboxCanAdopt(ctx, sandbox)
+				canAdopt, err := r.canAdoptUnownedChild(ctx, sandbox, "PersistentVolumeClaim", pvc.Name)
 				if err != nil {
 					return err
 				}
 				if !canAdopt {
-					logger.V(4).Info("Refusing to adopt unowned PVC: Sandbox is being deleted",
-						"PVC.Name", pvcName, "Sandbox.Name", sandbox.Name)
 					continue
 				}
 
