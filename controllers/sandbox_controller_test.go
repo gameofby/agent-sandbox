@@ -378,13 +378,17 @@ func TestComputeConditions(t *testing.T) {
 			sandbox: func() *sandboxv1beta1.Sandbox {
 				sb := sbWithMode(sandboxv1beta1.SandboxOperatingModeRunning)
 				sb.Status.Conditions = []metav1.Condition{{Type: "Suspended", Status: "True"}}
+				sb.Status.Suspension = &sandboxv1beta1.SandboxSuspensionStatus{
+					State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+					ObservedGeneration: gen,
+				}
 				return sb
 			}(),
 			svc: &corev1.Service{},
 			pod: nil,
 			expectedConditions: []metav1.Condition{
 				// Leaving Suspended=True records the resume on the condition's reason.
-				{Type: "Suspended", Status: "False", ObservedGeneration: gen, Reason: "Resumed", Message: "Sandbox has resumed from a suspension"},
+				{Type: "Suspended", Status: "False", ObservedGeneration: gen, Reason: "Resumed", Message: "Sandbox is not suspended"},
 				{Type: "Ready", Status: "False", ObservedGeneration: gen, Reason: "DependenciesNotReady", Message: "Pod does not exist; Service Exists"},
 			},
 		},
@@ -1671,6 +1675,10 @@ func TestReconcile(t *testing.T) {
 			},
 			wantStatus: sandboxv1beta1.SandboxStatus{
 				LabelSelector: sandboxv1beta1.SandboxNameHashLabel + "=" + nameHash,
+				Suspension: &sandboxv1beta1.SandboxSuspensionStatus{
+					State:              sandboxv1beta1.SandboxSuspensionStateTerminating,
+					ObservedGeneration: 1,
+				},
 				Conditions: []metav1.Condition{
 					{
 						Type:               "Suspended",
@@ -1710,6 +1718,10 @@ func TestReconcile(t *testing.T) {
 				},
 			},
 			wantStatus: sandboxv1beta1.SandboxStatus{
+				Suspension: &sandboxv1beta1.SandboxSuspensionStatus{
+					State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+					ObservedGeneration: 1,
+				},
 				Conditions: []metav1.Condition{
 					{
 						Type:               "Suspended",
@@ -8152,11 +8164,13 @@ func TestComputeSuspendedCondition_ResumedReason(t *testing.T) {
 		}}
 	}
 	tests := []struct {
-		name       string
-		mode       sandboxv1beta1.SandboxOperatingMode
-		previous   []metav1.Condition
-		wantStatus metav1.ConditionStatus
-		wantReason string
+		name        string
+		mode        sandboxv1beta1.SandboxOperatingMode
+		previous    []metav1.Condition
+		state       *sandboxv1beta1.SandboxSuspensionStatus
+		wantStatus  metav1.ConditionStatus
+		wantReason  string
+		wantMessage string
 	}{
 		{
 			name:       "created Sandbox reports NotSuspended",
@@ -8165,39 +8179,68 @@ func TestComputeSuspendedCondition_ResumedReason(t *testing.T) {
 			wantReason: sandboxv1beta1.SandboxReasonNotSuspended,
 		},
 		{
-			name:       "running after a completed suspension reports Resumed",
-			mode:       sandboxv1beta1.SandboxOperatingModeRunning,
-			previous:   previous(metav1.ConditionTrue, sandboxv1beta1.SandboxReasonSuspendedPodTerminated),
-			wantStatus: metav1.ConditionFalse,
-			wantReason: sandboxv1beta1.SandboxReasonResumed,
+			name:     "running after a completed suspension reports Resumed",
+			mode:     sandboxv1beta1.SandboxOperatingModeRunning,
+			previous: previous(metav1.ConditionTrue, sandboxv1beta1.SandboxReasonSuspendedPodTerminated),
+			state: &sandboxv1beta1.SandboxSuspensionStatus{
+				State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+				ObservedGeneration: 1,
+			},
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  sandboxv1beta1.SandboxReasonResumed,
+			wantMessage: "Sandbox is not suspended",
+		},
+		{
+			name:        "completed condition is a fallback for pre-field status",
+			mode:        sandboxv1beta1.SandboxOperatingModeRunning,
+			previous:    previous(metav1.ConditionTrue, sandboxv1beta1.SandboxReasonSuspendedPodTerminated),
+			wantStatus:  metav1.ConditionFalse,
+			wantReason:  sandboxv1beta1.SandboxReasonResumed,
+			wantMessage: "Sandbox is not suspended",
 		},
 		{
 			// The Pod's deletion was already issued, so the next Pod is started by a resume.
-			name:       "running while the suspended Pod is still terminating reports Resumed",
-			mode:       sandboxv1beta1.SandboxOperatingModeRunning,
-			previous:   previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonSuspendedPodTerminating),
+			name:     "running while the suspended Pod is still terminating reports Resumed",
+			mode:     sandboxv1beta1.SandboxOperatingModeRunning,
+			previous: previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonSuspendedPodTerminating),
+			state: &sandboxv1beta1.SandboxSuspensionStatus{
+				State:              sandboxv1beta1.SandboxSuspensionStateTerminating,
+				ObservedGeneration: 1,
+			},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: sandboxv1beta1.SandboxReasonResumed,
 		},
 		{
-			name:       "Resumed is kept on later reconciles",
-			mode:       sandboxv1beta1.SandboxOperatingModeRunning,
-			previous:   previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonResumed),
+			name:     "Resumed is kept on later reconciles",
+			mode:     sandboxv1beta1.SandboxOperatingModeRunning,
+			previous: previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonResumed),
+			state: &sandboxv1beta1.SandboxSuspensionStatus{
+				State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+				ObservedGeneration: 1,
+			},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: sandboxv1beta1.SandboxReasonResumed,
 		},
 		{
 			// The controller refused to delete a foreign Pod, so nothing was ever suspended.
-			name:       "running after PodNotOwned reports NotSuspended",
-			mode:       sandboxv1beta1.SandboxOperatingModeRunning,
-			previous:   previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonSuspendedPodNotOwned),
+			name:     "running after PodNotOwned reports NotSuspended",
+			mode:     sandboxv1beta1.SandboxOperatingModeRunning,
+			previous: previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonSuspendedPodNotOwned),
+			state: &sandboxv1beta1.SandboxSuspensionStatus{
+				State:              sandboxv1beta1.SandboxSuspensionStateStarted,
+				ObservedGeneration: 1,
+			},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: sandboxv1beta1.SandboxReasonNotSuspended,
 		},
 		{
-			name:       "a second suspend replaces Resumed",
-			mode:       sandboxv1beta1.SandboxOperatingModeSuspended,
-			previous:   previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonResumed),
+			name:     "a second suspend replaces Resumed",
+			mode:     sandboxv1beta1.SandboxOperatingModeSuspended,
+			previous: previous(metav1.ConditionFalse, sandboxv1beta1.SandboxReasonResumed),
+			state: &sandboxv1beta1.SandboxSuspensionStatus{
+				State:              sandboxv1beta1.SandboxSuspensionStateStarted,
+				ObservedGeneration: 2,
+			},
 			wantStatus: metav1.ConditionTrue,
 			wantReason: sandboxv1beta1.SandboxReasonSuspendedPodTerminated,
 		},
@@ -8205,13 +8248,232 @@ func TestComputeSuspendedCondition_ResumedReason(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			sandbox := &sandboxv1beta1.Sandbox{
-				Spec:   sandboxv1beta1.SandboxSpec{OperatingMode: tc.mode},
-				Status: sandboxv1beta1.SandboxStatus{Conditions: tc.previous},
+				Spec: sandboxv1beta1.SandboxSpec{OperatingMode: tc.mode},
+				Status: sandboxv1beta1.SandboxStatus{
+					Conditions: tc.previous,
+					Suspension: tc.state,
+				},
 			}
 			r := &SandboxReconciler{}
 			got := r.computeSuspendedCondition(sandbox, nil, nil)
 			assert.Equal(t, tc.wantStatus, got.Status)
 			assert.Equal(t, tc.wantReason, got.Reason)
+			if tc.wantMessage != "" {
+				assert.Equal(t, tc.wantMessage, got.Message)
+			}
 		})
 	}
+}
+
+func TestSuspensionState_PodReadErrorKeepsCompletedSuspension(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Generation: 2,
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+		},
+		Status: sandboxv1beta1.SandboxStatus{
+			Conditions: []metav1.Condition{{
+				Type:               string(sandboxv1beta1.SandboxConditionSuspended),
+				Status:             metav1.ConditionTrue,
+				ObservedGeneration: 1,
+				Reason:             sandboxv1beta1.SandboxReasonSuspendedPodTerminated,
+				Message:            "Pod has been terminated. Sandbox is suspended",
+			}},
+			Suspension: &sandboxv1beta1.SandboxSuspensionStatus{
+				State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+				ObservedGeneration: 2,
+			},
+		},
+	}
+
+	got, changed := suspensionStateForPod(sandbox, nil, errors.New("pod get failed"))
+
+	assert.False(t, changed)
+	assert.Equal(t, sandbox.Status.Suspension, got)
+
+	condition := (&SandboxReconciler{}).computeSuspendedCondition(
+		sandbox, nil, errors.New("pod get failed"),
+	)
+	assert.Equal(t, metav1.ConditionUnknown, condition.Status)
+	assert.Equal(t, sandboxv1beta1.SandboxReasonSuspendedPodStateUnknown, condition.Reason)
+
+	sandbox.Spec.OperatingMode = sandboxv1beta1.SandboxOperatingModeRunning
+	sandbox.Generation = 3
+	condition = (&SandboxReconciler{}).computeSuspendedCondition(sandbox, nil, nil)
+	assert.Equal(t, sandboxv1beta1.SandboxReasonResumed, condition.Reason)
+}
+
+func TestSuspensionState_PodReadErrorSeedsPreFieldCompletion(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Generation: 1},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+		},
+		Status: sandboxv1beta1.SandboxStatus{Conditions: []metav1.Condition{{
+			Type:               string(sandboxv1beta1.SandboxConditionSuspended),
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: 1,
+			Reason:             sandboxv1beta1.SandboxReasonSuspendedPodTerminated,
+			Message:            "Pod has been terminated. Sandbox is suspended",
+		}}},
+	}
+
+	state, changed := suspensionStateForPod(sandbox, nil, errors.New("pod get failed"))
+	require.True(t, changed)
+	require.Equal(t, &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+		ObservedGeneration: 1,
+	}, state)
+
+	sandbox.Status.Suspension = state
+	sandbox.Spec.OperatingMode = sandboxv1beta1.SandboxOperatingModeRunning
+	sandbox.Generation = 2
+	condition := (&SandboxReconciler{}).computeSuspendedCondition(sandbox, nil, nil)
+	assert.Equal(t, sandboxv1beta1.SandboxReasonResumed, condition.Reason)
+}
+
+func TestSuspensionState_FailedDeleteThenCancelIsNotResumed(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Generation: 1, UID: sandboxUID},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+		},
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:            sandbox.Name,
+		Namespace:       sandbox.Namespace,
+		OwnerReferences: []metav1.OwnerReference{sandboxControllerRef(sandbox.Name)},
+	}}
+	r := &SandboxReconciler{}
+
+	state, changed := suspensionStateForPod(sandbox, pod, fmt.Errorf("%w: boom", errDeletePod))
+	require.True(t, changed)
+	require.Equal(t, &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateStarted,
+		ObservedGeneration: 1,
+	}, state)
+	sandbox.Status.Suspension = state
+
+	sandbox.Spec.OperatingMode = sandboxv1beta1.SandboxOperatingModeRunning
+	sandbox.Generation = 2
+	got := r.computeSuspendedCondition(sandbox, pod, nil)
+
+	assert.Equal(t, sandboxv1beta1.SandboxReasonNotSuspended, got.Reason)
+}
+
+func TestSuspensionState_SecondFailedSuspendIsNotResumed(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{
+			Generation: 3,
+			UID:        sandboxUID,
+		},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+		},
+		Status: sandboxv1beta1.SandboxStatus{Suspension: &sandboxv1beta1.SandboxSuspensionStatus{
+			State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+			ObservedGeneration: 1,
+		}},
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:            sandbox.Name,
+		Namespace:       sandbox.Namespace,
+		OwnerReferences: []metav1.OwnerReference{sandboxControllerRef(sandbox.Name)},
+	}}
+
+	state, changed := suspensionStateForPod(sandbox, pod, fmt.Errorf("%w: boom", errDeletePod))
+	require.True(t, changed)
+	require.Equal(t, &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateStarted,
+		ObservedGeneration: 3,
+	}, state)
+
+	sandbox.Status.Suspension = state
+	sandbox.Spec.OperatingMode = sandboxv1beta1.SandboxOperatingModeRunning
+	sandbox.Generation = 4
+	got := (&SandboxReconciler{}).computeSuspendedCondition(sandbox, pod, nil)
+	assert.Equal(t, sandboxv1beta1.SandboxReasonNotSuspended, got.Reason)
+}
+
+func TestSuspensionState_RecordsStartedAndCompleted(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Generation: 1, UID: sandboxUID},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+		},
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:            sandbox.Name,
+		Namespace:       sandbox.Namespace,
+		OwnerReferences: []metav1.OwnerReference{sandboxControllerRef(sandbox.Name)},
+	}}
+
+	state, changed := suspensionStateForPod(sandbox, pod, nil)
+	require.True(t, changed)
+	require.Equal(t, &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateTerminating,
+		ObservedGeneration: 1,
+	}, state)
+
+	sandbox.Status.Suspension = state
+	state, changed = suspensionStateForPod(sandbox, nil, nil)
+	require.True(t, changed)
+	require.Equal(t, &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateCompleted,
+		ObservedGeneration: 1,
+	}, state)
+}
+
+func TestSuspensionState_CleanupErrorKeepsExistingCondition(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Generation: 1, UID: sandboxUID},
+		Spec: sandboxv1beta1.SandboxSpec{
+			OperatingMode: sandboxv1beta1.SandboxOperatingModeSuspended,
+		},
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:            sandbox.Name,
+		Namespace:       sandbox.Namespace,
+		OwnerReferences: []metav1.OwnerReference{sandboxControllerRef(sandbox.Name)},
+	}}
+	now := metav1.Now()
+	pod.DeletionTimestamp = &now
+	cleanupErr := errors.New("failed to clear pod name annotation")
+
+	state, changed := suspensionStateForPod(sandbox, pod, cleanupErr)
+	require.True(t, changed)
+	require.Equal(t, &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateTerminating,
+		ObservedGeneration: 1,
+	}, state)
+
+	condition := (&SandboxReconciler{}).computeSuspendedCondition(sandbox, pod, cleanupErr)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, sandboxv1beta1.SandboxReasonSuspendedPodTerminating, condition.Reason)
+}
+
+func TestSuspensionStatePersistsInStatus(t *testing.T) {
+	sandbox := &sandboxv1beta1.Sandbox{ObjectMeta: metav1.ObjectMeta{
+		Name:      "stateful",
+		Namespace: "default",
+	}}
+	fc := newFakeClient(sandbox)
+	r := &SandboxReconciler{Client: fc, Scheme: Scheme}
+	stored := &sandboxv1beta1.Sandbox{}
+	require.NoError(t, fc.Get(t.Context(), client.ObjectKeyFromObject(sandbox), stored))
+	oldStatus := stored.Status.DeepCopy()
+	stored.Status.Suspension = &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              sandboxv1beta1.SandboxSuspensionStateStarted,
+		ObservedGeneration: 1,
+	}
+
+	require.NoError(t, r.updateStatus(t.Context(), oldStatus, stored.ResourceVersion, stored))
+
+	updated := &sandboxv1beta1.Sandbox{}
+	require.NoError(t, fc.Get(t.Context(), client.ObjectKeyFromObject(sandbox), updated))
+	require.NotNil(t, updated.Status.Suspension)
+	assert.Equal(t, sandboxv1beta1.SandboxSuspensionStateStarted, updated.Status.Suspension.State)
+	assert.Equal(t, int64(1), updated.Status.Suspension.ObservedGeneration)
 }

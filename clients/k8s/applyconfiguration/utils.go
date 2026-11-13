@@ -48,6 +48,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1beta1.SandboxSpecApplyConfiguration{}
 	case v1beta1.SchemeGroupVersion.WithKind("SandboxStatus"):
 		return &apiv1beta1.SandboxStatusApplyConfiguration{}
+	case v1beta1.SchemeGroupVersion.WithKind("SandboxSuspensionStatus"):
+		return &apiv1beta1.SandboxSuspensionStatusApplyConfiguration{}
 
 	}
 	return nil

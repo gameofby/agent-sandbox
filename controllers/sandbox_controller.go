@@ -568,6 +568,9 @@ func (r *SandboxReconciler) reconcileChildResources(ctx context.Context, sandbox
 	}
 
 	// compute and set overall conditions
+	if state, changed := suspensionStateForPod(sandbox, pod, podErr); changed {
+		sandbox.Status.Suspension = state
+	}
 	conditions := r.computeConditions(sandbox, conditionErrors, svc, pod, podErr)
 	// Conditions that are only present while they apply: Finished has no
 	// meaning without a terminal pod, PodScheduled none without a pod at
@@ -699,7 +702,6 @@ func (r *SandboxReconciler) computeSuspendedCondition(sandbox *sandboxv1beta1.Sa
 	if sandbox.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeSuspended {
 		if sandboxWasSuspended(sandbox) {
 			suspended.Reason = sandboxv1beta1.SandboxReasonResumed
-			suspended.Message = "Sandbox has resumed from a suspension"
 		}
 		return suspended
 	}
@@ -730,21 +732,74 @@ func (r *SandboxReconciler) computeSuspendedCondition(sandbox *sandboxv1beta1.Sa
 	return suspended
 }
 
-// sandboxWasSuspended reports whether a running Sandbox's current Pod was started by a
-// resume rather than by creation. The previous Suspended condition is the record: True
-// means the Pod had been terminated, PodTerminating means its deletion was already
-// under way, and Resumed carries an earlier verdict forward. Reading status rather than
-// timing keeps the answer exact across controller restarts.
+var errDeletePod = errors.New("failed to delete pod")
+
+// suspensionStateForPod derives the durable state of the current suspend request.
+// The generation prevents a completed or terminating state from an earlier
+// request making a later failed request look successful.
+func suspensionStateForPod(sandbox *sandboxv1beta1.Sandbox, pod *corev1.Pod, podErr error) (*sandboxv1beta1.SandboxSuspensionStatus, bool) {
+	if sandbox.Spec.OperatingMode != sandboxv1beta1.SandboxOperatingModeSuspended {
+		return nil, false
+	}
+
+	current := sandbox.Status.Suspension
+	generation := sandbox.Generation
+
+	var desired sandboxv1beta1.SandboxSuspensionState
+	switch {
+	case pod == nil && podErr == nil:
+		desired = sandboxv1beta1.SandboxSuspensionStateCompleted
+	case pod != nil && isOwnedBySandbox(pod, sandbox) &&
+		(podErr == nil || !errors.Is(podErr, errDeletePod) || !pod.DeletionTimestamp.IsZero()):
+		desired = sandboxv1beta1.SandboxSuspensionStateTerminating
+	case pod == nil && podErr != nil &&
+		completedSuspensionConditionAtGeneration(sandbox, generation):
+		// Objects written before status.suspension existed still carry a
+		// completed suspension in the condition. Seed the field while the
+		// condition is available instead of downgrading it after a Pod error.
+		desired = sandboxv1beta1.SandboxSuspensionStateCompleted
+	case current != nil && current.ObservedGeneration == generation &&
+		(current.State == sandboxv1beta1.SandboxSuspensionStateTerminating ||
+			current.State == sandboxv1beta1.SandboxSuspensionStateCompleted):
+		// A Pod read or cleanup error cannot erase durable evidence from this
+		// suspend request.
+		desired = current.State
+	default:
+		desired = sandboxv1beta1.SandboxSuspensionStateStarted
+	}
+	next := &sandboxv1beta1.SandboxSuspensionStatus{
+		State:              desired,
+		ObservedGeneration: generation,
+	}
+	return next, current == nil || *current != *next
+}
+
+// sandboxWasSuspended reports whether the current Pod follows Pod termination.
+// The status field is durable across Pod read errors. The condition fallback
+// handles objects updated before the status field existed.
 func sandboxWasSuspended(sandbox *sandboxv1beta1.Sandbox) bool {
+	if state := sandbox.Status.Suspension; state != nil {
+		if state.State == sandboxv1beta1.SandboxSuspensionStateTerminating ||
+			state.State == sandboxv1beta1.SandboxSuspensionStateCompleted {
+			return true
+		}
+		// A field initialized during a Pod error may still be Started when the
+		// prerequisite condition retains matching completion evidence.
+		return completedSuspensionConditionAtGeneration(sandbox, state.ObservedGeneration)
+	}
 	previous := meta.FindStatusCondition(sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
-	if previous == nil {
-		return false
-	}
-	if previous.Status == metav1.ConditionTrue {
-		return true
-	}
-	return previous.Reason == sandboxv1beta1.SandboxReasonSuspendedPodTerminating ||
-		previous.Reason == sandboxv1beta1.SandboxReasonResumed
+	return previous != nil &&
+		(previous.Reason == sandboxv1beta1.SandboxReasonResumed ||
+			(previous.Status == metav1.ConditionTrue &&
+				previous.Reason == sandboxv1beta1.SandboxReasonSuspendedPodTerminated))
+}
+
+func completedSuspensionConditionAtGeneration(sandbox *sandboxv1beta1.Sandbox, generation int64) bool {
+	previous := meta.FindStatusCondition(sandbox.Status.Conditions, string(sandboxv1beta1.SandboxConditionSuspended))
+	return previous != nil &&
+		previous.Status == metav1.ConditionTrue &&
+		previous.Reason == sandboxv1beta1.SandboxReasonSuspendedPodTerminated &&
+		previous.ObservedGeneration == generation
 }
 
 func (r *SandboxReconciler) computeReadyCondition(sandbox *sandboxv1beta1.Sandbox, err error, svc *corev1.Service, pod *corev1.Pod) metav1.Condition {
@@ -1785,7 +1840,7 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *sandboxv1
 				if pod.DeletionTimestamp.IsZero() {
 					logger.Info("Deleting Pod because .Spec.OperatingMode is Suspended", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
 					if err := r.Delete(ctx, pod); err != nil {
-						return pod, 0, fmt.Errorf("failed to delete pod: %w", err)
+						return pod, 0, fmt.Errorf("%w: %w", errDeletePod, err)
 					}
 				} else {
 					logger.V(4).Info("Pod is already being deleted", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)

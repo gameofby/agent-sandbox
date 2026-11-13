@@ -409,6 +409,30 @@ type Lifecycle struct {
 	ShutdownPolicy *ShutdownPolicy `json:"shutdownPolicy,omitempty"`
 }
 
+// SandboxSuspensionState describes the latest suspend request.
+// +kubebuilder:validation:Enum=Started;Terminating;Completed
+type SandboxSuspensionState string
+
+const (
+	// SandboxSuspensionStateStarted means the controller accepted the suspend request.
+	SandboxSuspensionStateStarted SandboxSuspensionState = "Started"
+	// SandboxSuspensionStateTerminating means the controller started deleting the backing Pod.
+	SandboxSuspensionStateTerminating SandboxSuspensionState = "Terminating"
+	// SandboxSuspensionStateCompleted means the backing Pod is gone.
+	SandboxSuspensionStateCompleted SandboxSuspensionState = "Completed"
+)
+
+// SandboxSuspensionStatus records durable progress for the latest suspend request.
+type SandboxSuspensionStatus struct {
+	// state reports whether the request started, is terminating a Pod, or completed.
+	// +required
+	State SandboxSuspensionState `json:"state"`
+
+	// observedGeneration is the Sandbox generation that produced state.
+	// +required
+	ObservedGeneration int64 `json:"observedGeneration"`
+}
+
 // SandboxStatus defines the observed state of Sandbox.
 type SandboxStatus struct {
 	// serviceFQDN that is valid for default cluster settings
@@ -426,6 +450,12 @@ type SandboxStatus struct {
 	// conditions defines the status conditions array
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// suspension records durable progress for the latest suspend request. It lets
+	// consumers distinguish a failed suspend from a completed one after a transient
+	// condition change.
+	// +optional
+	Suspension *SandboxSuspensionStatus `json:"suspension,omitempty"`
 
 	// selector is the label selector for pods.
 	// +optional

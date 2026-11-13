@@ -234,9 +234,46 @@ _Appears in:_
 | `serviceFQDN` _string_ | serviceFQDN that is valid for default cluster settings<br />The domain defaults to cluster.local but is configurable via the controller's --cluster-domain flag. |  | Optional: \{\} <br /> |
 | `service` _string_ | service is the name of the headless Service created for this Sandbox. It is empty<br />when no Service exists for the Sandbox (for example when spec.service is false, or<br />unset with no pre-existing Service). See serviceFQDN for the fully qualified<br />in-cluster DNS name of this Service. |  | Optional: \{\} <br /> |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#condition-v1-meta) array_ | conditions defines the status conditions array |  | Optional: \{\} <br /> |
+| `suspension` _[SandboxSuspensionStatus](#sandboxsuspensionstatus)_ | suspension records durable progress for the latest suspend request. It lets<br />consumers distinguish a failed suspend from a completed one after a transient<br />condition change. |  | Optional: \{\} <br /> |
 | `selector` _string_ | selector is the label selector for pods. |  | Optional: \{\} <br /> |
 | `podIPs` _string array_ | podIPs are the IP addresses of the underlying pod.<br />A pod may have multiple IPs in dual-stack clusters.<br />This field is populated only while a backing pod exists. It is cleared whenever<br />the pod is absent, for example when the Sandbox is suspended<br />(operatingMode: Suspended) or before the pod has been created. |  | Optional: \{\} <br /> |
 | `nodeName` _string_ | nodeName is the name of the node where the underlying pod is scheduled.<br />Like podIPs, it is cleared whenever the pod is absent (e.g. while suspended). |  | Optional: \{\} <br /> |
+
+
+#### SandboxSuspensionState
+
+_Underlying type:_ _string_
+
+SandboxSuspensionState describes the latest suspend request.
+
+_Validation:_
+- Enum: [Started Terminating Completed]
+
+_Appears in:_
+- [SandboxSuspensionStatus](#sandboxsuspensionstatus)
+
+| Field | Description |
+| --- | --- |
+| `Started` | SandboxSuspensionStateStarted means the controller accepted the suspend request.<br /> |
+| `Terminating` | SandboxSuspensionStateTerminating means the controller started deleting the backing Pod.<br /> |
+| `Completed` | SandboxSuspensionStateCompleted means the backing Pod is gone.<br /> |
+
+
+#### SandboxSuspensionStatus
+
+
+
+SandboxSuspensionStatus records durable progress for the latest suspend request.
+
+
+
+_Appears in:_
+- [SandboxStatus](#sandboxstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `state` _[SandboxSuspensionState](#sandboxsuspensionstate)_ | state reports whether the request started, is terminating a Pod, or completed. |  | Enum: [Started Terminating Completed] <br />Required: \{\} <br /> |
+| `observedGeneration` _integer_ | observedGeneration is the Sandbox generation that produced state. |  | Required: \{\} <br /> |
 
 
 #### ShutdownPolicy

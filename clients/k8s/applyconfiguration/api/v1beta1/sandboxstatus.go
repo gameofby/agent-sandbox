@@ -35,6 +35,10 @@ type SandboxStatusApplyConfiguration struct {
 	Service *string `json:"service,omitempty"`
 	// conditions defines the status conditions array
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	// suspension records durable progress for the latest suspend request. It lets
+	// consumers distinguish a failed suspend from a completed one after a transient
+	// condition change.
+	Suspension *SandboxSuspensionStatusApplyConfiguration `json:"suspension,omitempty"`
 	// selector is the label selector for pods.
 	LabelSelector *string `json:"selector,omitempty"`
 	// podIPs are the IP addresses of the underlying pod.
@@ -80,6 +84,14 @@ func (b *SandboxStatusApplyConfiguration) WithConditions(values ...*v1.Condition
 		}
 		b.Conditions = append(b.Conditions, *values[i])
 	}
+	return b
+}
+
+// WithSuspension sets the Suspension field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Suspension field is set to the value of the last call.
+func (b *SandboxStatusApplyConfiguration) WithSuspension(value *SandboxSuspensionStatusApplyConfiguration) *SandboxStatusApplyConfiguration {
+	b.Suspension = value
 	return b
 }
 

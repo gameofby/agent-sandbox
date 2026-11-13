@@ -4156,6 +4156,21 @@ spec:
                 type: string
               serviceFQDN:
                 type: string
+              suspension:
+                properties:
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  state:
+                    enum:
+                    - Started
+                    - Terminating
+                    - Completed
+                    type: string
+                required:
+                - observedGeneration
+                - state
+                type: object
             type: object
         required:
         - spec

@@ -2554,6 +2554,20 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: serviceFQDN
       type:
         scalar: string
+    - name: suspension
+      type:
+        namedType: io.k8s.sigs.agent-sandbox.api.v1beta1.SandboxSuspensionStatus
+- name: io.k8s.sigs.agent-sandbox.api.v1beta1.SandboxSuspensionStatus
+  map:
+    fields:
+    - name: observedGeneration
+      type:
+        scalar: numeric
+      default: 0
+    - name: state
+      type:
+        scalar: string
+      default: ""
 - name: __untyped_atomic_
   scalar: untyped
   list:
