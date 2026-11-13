@@ -130,9 +130,12 @@ class AsyncSandbox:
         resource = await self.k8s_helper.get_sandbox(self.sandbox_id, self.namespace)
         if resource is None:
             raise SandboxNotFoundError(f"Sandbox '{self.sandbox_id}' no longer exists")
-        uid = resource["metadata"]["uid"]
+        metadata = resource.get("metadata") or {}
+        uid = metadata["uid"]
         if self._lifecycle_uid not in (None, uid):
             raise SandboxNotFoundError(f"Sandbox '{self.sandbox_id}' was replaced")
+        if metadata.get("deletionTimestamp"):
+            raise SandboxNotFoundError(f"Sandbox '{self.sandbox_id}' is terminating")
         self._lifecycle_uid = uid
         return resource, resource.get("spec", {}).get("operatingMode", "Running")
 
@@ -149,6 +152,8 @@ class AsyncSandbox:
         except TimeoutError:
             raise TimeoutError("Timed out waiting for the lifecycle lock") from None
         try:
+            if self._is_closed:
+                raise RuntimeError("Sandbox connection is closed")
             resource, current_mode = await self._read_lifecycle()
             if current_mode != mode:
                 resource = await self.k8s_helper.patch_sandbox_operating_mode(
@@ -323,19 +328,22 @@ class AsyncSandbox:
         if self._is_closed:
             return
 
-        await self.connector.close()
+        async with self._lifecycle_lock:
+            if self._is_closed:
+                return
+            await self.connector.close()
 
-        self._commands = None
-        self._files = None
-        self._watcher = None
+            self._commands = None
+            self._files = None
+            self._watcher = None
 
-        if self.tracing_manager:
-            try:
-                self.tracing_manager.end_lifecycle_span()
-            except Exception as e:
-                logger.error(f"Failed to end tracing span: {e}")
+            if self.tracing_manager:
+                try:
+                    self.tracing_manager.end_lifecycle_span()
+                except Exception as e:
+                    logger.error(f"Failed to end tracing span: {e}")
 
-        self._is_closed = True
+            self._is_closed = True
         logger.info(f"Connection to sandbox claim '{self.claim_name}' has been closed.")
 
     def _close_for_atexit(self) -> None:

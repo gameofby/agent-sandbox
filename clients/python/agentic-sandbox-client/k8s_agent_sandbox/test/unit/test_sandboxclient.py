@@ -123,7 +123,7 @@ class TestSandboxClient(unittest.TestCase):
         self.client._active_connection_sandboxes[("test-namespace", "test-claim")] = mock_sandbox
         
         self.mock_k8s_helper.resolve_sandbox_name.return_value = "resolved-id"
-        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {}}
+        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {"uid": "current-uid"}}
 
         sandbox = self.client.get_sandbox("test-claim", "test-namespace")
         
@@ -136,7 +136,7 @@ class TestSandboxClient(unittest.TestCase):
         self.client._active_connection_sandboxes[("test-namespace", "test-claim")] = mock_inactive_sandbox
         
         self.mock_k8s_helper.resolve_sandbox_name.return_value = "resolved-id"
-        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {}}
+        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {"uid": "current-uid"}}
         
         mock_new_sandbox = MagicMock()
         self.mock_sandbox_class.return_value = mock_new_sandbox
@@ -147,6 +147,7 @@ class TestSandboxClient(unittest.TestCase):
         self.assertEqual(self.client._active_connection_sandboxes[("test-namespace", "test-claim")], mock_new_sandbox)
         self.mock_k8s_helper.get_sandbox.assert_called_with("resolved-id", "test-namespace")
         self.mock_sandbox_class.assert_called_once()
+        self.assertEqual(mock_new_sandbox._lifecycle_uid, "current-uid")
 
     def test_get_sandbox_replaces_handle_when_claim_rebinds(self):
         """A claim deleted and re-created under the same name binds to a new

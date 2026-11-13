@@ -69,6 +69,7 @@ class TestSandbox(unittest.TestCase):
             sandbox_id=self.sandbox_id,
             namespace=self.namespace,
         )
+        self.sandbox._lifecycle_uid = "original"
 
     RUNNING = {"metadata": {"uid": "original", "generation": 1}}
     SUSPENDED = {"metadata": {"uid": "original", "generation": 2}, "spec": {"operatingMode": "Suspended"}}
@@ -101,10 +102,23 @@ class TestSandbox(unittest.TestCase):
         self.assertTrue(self.sandbox.is_suspended())
 
     def test_suspend_rejects_replaced_sandbox(self):
-        self.mock_k8s_helper.get_sandbox.side_effect = [self.RUNNING, {"metadata": {"uid": "replacement"}}]
-        self.sandbox.is_suspended()
+        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {"uid": "replacement"}}
         with self.assertRaises(SandboxNotFoundError):
             self.sandbox.suspend()
+
+    def test_suspend_rejects_terminating_sandbox_before_patch(self):
+        self.mock_k8s_helper.get_sandbox.return_value = {
+            "metadata": {
+                "uid": "original",
+                "generation": 1,
+                "deletionTimestamp": "2026-11-13T08:00:00Z",
+            },
+        }
+
+        with self.assertRaisesRegex(SandboxNotFoundError, "terminating"):
+            self.sandbox.suspend()
+
+        self.mock_k8s_helper.patch_sandbox_operating_mode.assert_not_called()
 
     def test_suspend_rejects_mode_changed_during_wait(self):
         self.mock_k8s_helper.get_sandbox.return_value = self.RUNNING
@@ -140,6 +154,7 @@ class TestSandbox(unittest.TestCase):
         self.assertEqual(self.sandbox.claim_name, self.claim_name)
         self.assertEqual(self.sandbox.sandbox_id, self.sandbox_id)
         self.assertEqual(self.sandbox.namespace, self.namespace)
+        self.assertEqual(self.sandbox._lifecycle_uid, "original")
         self.assertFalse(self.sandbox._is_closed)
 
     @patch('k8s_agent_sandbox.sandbox.Filesystem')

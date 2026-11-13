@@ -79,7 +79,9 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_sandbox_success(self):
         self.mock_k8s_helper.wait_for_claim_ready = AsyncMock(return_value="resolved-id")
-        self.mock_k8s_helper.get_sandbox = AsyncMock(return_value={"metadata": {}})
+        self.mock_k8s_helper.get_sandbox = AsyncMock(
+            return_value={"metadata": {"uid": "current-uid"}}
+        )
 
         mock_sandbox_instance = MagicMock()
         mock_sandbox_instance.terminate = AsyncMock()
@@ -202,7 +204,9 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
         sandbox, so get_sandbox must not return the old sandbox's handle."""
         self.mock_k8s_helper.get_sandbox_claim = AsyncMock(return_value={"metadata": {}})
         self.mock_k8s_helper.resolve_sandbox_name = AsyncMock(return_value="python-aaaaa")
-        self.mock_k8s_helper.get_sandbox = AsyncMock(return_value={"metadata": {}})
+        self.mock_k8s_helper.get_sandbox = AsyncMock(
+            return_value={"metadata": {"uid": "current-uid"}}
+        )
         self.mock_k8s_helper.delete_sandbox_claim = AsyncMock()
         old_handle = MagicMock()
         old_handle.is_active = True
@@ -221,6 +225,7 @@ class TestAsyncSandboxClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(sandbox, new_handle)
         self.assertEqual(self.mock_sandbox_class.call_args.kwargs["sandbox_id"], "python-bbbbb")
+        self.assertEqual(new_handle._lifecycle_uid, "current-uid")
         self.assertIs(self.client._active_connection_sandboxes[("ns", "c1")], new_handle)
         # The stale handle is closed locally; nothing is deleted server-side.
         old_handle.close_connection.assert_awaited_once_with()

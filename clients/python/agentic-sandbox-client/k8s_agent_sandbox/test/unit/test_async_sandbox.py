@@ -14,6 +14,7 @@
 
 """Unit tests for the async Sandbox connection lifecycle."""
 
+import asyncio
 import gc
 import unittest
 import weakref
@@ -88,6 +89,7 @@ class TestAsyncSandbox(unittest.IsolatedAsyncioTestCase):
             namespace=self.namespace,
             connection_config=self.connection_config,
         )
+        self.sandbox._lifecycle_uid = "original"
 
     RUNNING = {"metadata": {"uid": "original", "generation": 1}}
     SUSPENDED = {"metadata": {"uid": "original", "generation": 2}, "spec": {"operatingMode": "Suspended"}}
@@ -124,10 +126,24 @@ class TestAsyncSandbox(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.sandbox.is_suspended())
 
     async def test_suspend_rejects_replaced_sandbox(self):
-        self.mock_k8s_helper.get_sandbox.side_effect = [self.RUNNING, {"metadata": {"uid": "replacement"}}]
-        await self.sandbox.is_suspended()
+        self.mock_k8s_helper.get_sandbox.return_value = {"metadata": {"uid": "replacement"}}
         with self.assertRaises(SandboxNotFoundError):
             await self.sandbox.suspend()
+
+    async def test_suspend_rejects_terminating_sandbox_before_patch(self):
+        self.mock_k8s_helper.get_sandbox.return_value = {
+            "metadata": {
+                "uid": "original",
+                "generation": 1,
+                "deletionTimestamp": "2026-11-13T08:00:00Z",
+            },
+        }
+        self.mock_k8s_helper.patch_sandbox_operating_mode = AsyncMock()
+
+        with self.assertRaisesRegex(SandboxNotFoundError, "terminating"):
+            await self.sandbox.suspend()
+
+        self.mock_k8s_helper.patch_sandbox_operating_mode.assert_not_awaited()
 
     async def test_suspend_rejects_mode_changed_during_wait(self):
         self.mock_k8s_helper.get_sandbox.return_value = self.RUNNING
@@ -140,6 +156,46 @@ class TestAsyncSandbox(unittest.IsolatedAsyncioTestCase):
         async with self.sandbox._lifecycle_lock:
             with self.assertRaisesRegex(TimeoutError, "lifecycle lock"):
                 await self.sandbox.resume(timeout=0)
+
+    async def test_close_waits_for_suspend_and_closes_replacement_connector(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        replacement = MagicMock()
+        replacement.close = AsyncMock()
+        replacement.transfer_state_from = MagicMock()
+        self.mock_k8s_helper.get_sandbox.side_effect = [self.RUNNING, self.SUSPENDED]
+        self.mock_k8s_helper.patch_sandbox_operating_mode = AsyncMock(return_value=self.SUSPENDED)
+
+        async def wait_for_ready(*args, **kwargs):
+            started.set()
+            await release.wait()
+
+        self.mock_k8s_helper.wait_for_sandbox_ready = AsyncMock(side_effect=wait_for_ready)
+        with patch.object(self.sandbox, "_new_connector", return_value=replacement):
+            suspend_task = asyncio.create_task(self.sandbox.suspend())
+            await started.wait()
+            close_task = asyncio.create_task(self.sandbox.close_connection())
+            await asyncio.sleep(0)
+            self.assertFalse(close_task.done())
+
+            release.set()
+            await suspend_task
+            await close_task
+
+        replacement.close.assert_awaited_once_with()
+
+    async def test_close_queued_before_lifecycle_waiter_wins_lock(self):
+        async with self.sandbox._lifecycle_lock:
+            close_task = asyncio.create_task(self.sandbox.close_connection())
+            await asyncio.sleep(0)
+            resume_task = asyncio.create_task(self.sandbox.resume())
+            await asyncio.sleep(0)
+
+        await close_task
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            await resume_task
+        self.mock_k8s_helper.get_sandbox.assert_not_awaited()
+
     async def test_suspend_rejects_closed_handle(self):
         await self.sandbox.close_connection()
         with self.assertRaisesRegex(RuntimeError, "closed"):
@@ -177,6 +233,7 @@ class TestAsyncSandbox(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sandbox.sandbox_id, self.sandbox_id)
         self.assertEqual(self.sandbox.namespace, self.namespace)
         self.assertEqual(self.sandbox.connection_config, self.connection_config)
+        self.assertEqual(self.sandbox._lifecycle_uid, "original")
         self.assertFalse(self.sandbox._is_closed)
 
     def test_init_requires_connection_config(self):

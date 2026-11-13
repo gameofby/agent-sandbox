@@ -126,9 +126,12 @@ class Sandbox:
         resource = self.k8s_helper.get_sandbox(self.sandbox_id, self.namespace)
         if resource is None:
             raise SandboxNotFoundError(f"Sandbox '{self.sandbox_id}' no longer exists")
-        uid = resource["metadata"]["uid"]
+        metadata = resource.get("metadata") or {}
+        uid = metadata["uid"]
         if self._lifecycle_uid not in (None, uid):
             raise SandboxNotFoundError(f"Sandbox '{self.sandbox_id}' was replaced")
+        if metadata.get("deletionTimestamp"):
+            raise SandboxNotFoundError(f"Sandbox '{self.sandbox_id}' is terminating")
         self._lifecycle_uid = uid
         return resource, resource.get("spec", {}).get("operatingMode", "Running")
 

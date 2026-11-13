@@ -506,6 +506,7 @@ class AsyncSandboxClient(Generic[T]):
             k8s_helper=self.k8s_helper,
             **({"file_config": self.file_config} if self.file_config is not None else {}),
         )
+        new_handle._lifecycle_uid = (sandbox_object.get("metadata") or {}).get("uid")
         self._attach_handle(new_handle)
 
         # A concurrent call may have tracked a handle for this Sandbox while
