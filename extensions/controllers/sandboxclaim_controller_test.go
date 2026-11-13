@@ -2324,6 +2324,16 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 		return sb
 	}
 
+	createReadyTerminalWarmPoolSandbox := func(name string, creationTime metav1.Time, reason string) *sandboxv1beta1.Sandbox {
+		sb := createWarmPoolSandbox(name, creationTime, false)
+		sb.Status.Conditions = []metav1.Condition{{
+			Type:   string(sandboxv1beta1.SandboxConditionReady),
+			Status: metav1.ConditionFalse,
+			Reason: reason,
+		}}
+		return sb
+	}
+
 	// matchingBlueprintHash is the blueprint hash the warm pool controller would stamp on a
 	// fresh sandbox for this template; a candidate carrying it is considered current under Recreate.
 	matchingBlueprintHash, hashErr := computeSandboxBlueprintHash(template)
@@ -2457,6 +2467,22 @@ func TestSandboxClaimSandboxAdoption(t *testing.T) {
 			},
 			expectSandboxAdoption:   false,
 			expectNewSandboxCreated: true,
+		},
+		{
+			name: "skips expired warm pool sandbox without Finished condition",
+			existingObjects: []client.Object{
+				template,
+				claim,
+				createReadyTerminalWarmPoolSandbox(
+					"expired-sb",
+					metav1.Time{Time: metav1.Now().Add(-2 * time.Hour)},
+					sandboxv1beta1.SandboxReasonExpired,
+				),
+				createWarmPoolSandbox("not-ready-1", metav1.Time{Time: metav1.Now().Add(-1 * time.Hour)}, false),
+			},
+			expectSandboxAdoption:   true,
+			expectedAdoptedSandbox:  "not-ready-1",
+			expectNewSandboxCreated: false,
 		},
 		{
 			name: "falls through to cold creation after grace expires when warm candidates lack PodIPs",
